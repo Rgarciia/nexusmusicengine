@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Nexus Music Engine</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    :root {
+      --bg-main: #09090b; --bg-sidebar: #121214; --bg-card: #18181c;
+      --accent: #007aff; --warning: #eab308; --success: #34c759;
+      --error: #ef4444; --text-muted: #8e8e9a; --border: #222228;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-main); color: #fff; display: flex; height: 100vh; overflow: hidden; }
+
+    .sidebar { width: 240px; background: var(--bg-sidebar); padding: 20px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    .sidebar h2 { font-size: 1.1rem; }
+    .sidebar .subtitle { color: var(--accent); font-size: 0.75rem; font-weight: bold; margin-bottom: 25px; }
+    .nav-item { padding: 12px 10px; color: var(--text-muted); cursor: pointer; font-weight: 600; font-size: 0.88rem; border-radius: 6px; margin-bottom: 4px; }
+    .nav-item.active, .nav-item:hover { color: #fff; background: #1a1a20; }
+
+    .content { flex: 1; padding: 25px; padding-bottom: 90px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+    
+    .action-bar { display: flex; justify-content: space-between; align-items: center; }
+    .btn { background: var(--bg-card); color: #fff; border: 1px solid var(--border); padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 0.82rem; cursor: pointer; }
+    .btn-primary { background: var(--accent); border: none; color: #fff; font-weight: bold; }
+    .btn-danger { background: var(--error); border: none; color: #fff; font-weight: bold; }
+
+    .metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }
+    .card-title { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: bold; margin-bottom: 8px; }
+    .card-value { font-size: 1.6rem; font-weight: bold; }
+
+    .console-card { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 15px; font-family: monospace; height: 260px; overflow-y: auto; font-size: 0.82rem; }
+    .log-line { margin-bottom: 4px; }
+    .log-info { color: #a1a1aa; }
+    .log-warning { color: var(--warning); font-weight: bold; }
+    .log-error { color: var(--error); font-weight: bold; }
+    .log-success { color: var(--success); font-weight: bold; }
+
+    .audio-player-bar { position: fixed; bottom: 0; left: 240px; right: 0; height: 75px; background: #121216; border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 25px; justify-content: space-between; z-index: 100; }
+    .now-playing { font-size: 0.85rem; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .now-playing-title { font-weight: bold; color: #fff; }
+    .now-playing-artist { color: var(--text-muted); font-size: 0.78rem; }
+    audio { height: 40px; outline: none; width: 50%; }
+
+    .search-input { width: 100%; padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: #fff; margin-bottom: 15px; outline: none; }
+    select.search-input option { background: var(--bg-card); color: #fff; }
+
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
+    th, td { padding: 12px 15px; border-bottom: 1px solid var(--border); }
+    th { background: #121216; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
+    tr:hover { background: #1a1a20; }
+    .badge-key { background: #1e293b; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
+    .btn-play { background: var(--accent); border: none; color: #fff; border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; justify-content: center; }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+  </style>
+</head>
+<body>
+
+  <div class="sidebar">
+    <h2>NEXUS MUSIC</h2>
+    <div class="subtitle" style="color: #fff;">ENGINE MANAGER</div>
+    <div class="nav-item active" onclick="showTab('dashboard', event)">🏠 Dashboard / Home</div>
+    <div class="nav-item" onclick="showTab('collection', event)">🎵 Play / Library</div>
+    <div class="nav-item" onclick="showTab('playlists', event)">📂 Playlists & XML</div>
+  </div>
+
+  <div class="content">
+    
+    <div id="tab-dashboard" class="panel active">
+      <div class="action-bar" style="margin-bottom: 20px;">
+        <h2>SYSTEM DASHBOARD</h2>
+        <div>
+          <button class="btn" onclick="triggerScript('Tagging.ps1')">🏷️ Tagging.ps1</button>
+          <button class="btn" onclick="triggerScript('Audio.ps1')">🔊 Audio.ps1</button>
+          <button class="btn btn-primary" onclick="triggerScript('Import.ps1')">▶ Run Import.ps1</button>
+        </div>
+      </div>
+      <div class="metrics-grid" style="margin-bottom: 20px;">
+        <div class="card"><div class="card-title">Total Tracks</div><div class="card-value" id="total-tracks">0</div></div>
+        <div class="card"><div class="card-title">Playlists (.m3u8)</div><div class="card-value" id="total-playlists">0</div></div>
+        <div class="card"><div class="card-title">Engine Status</div><div class="card-value" style="color: var(--success);">ONLINE</div></div>
+      </div>
+      <h3 style="margin-bottom: 10px; font-size: 0.95rem; color: var(--text-muted);">REALTIME CONSOLE LOGS</h3>
+      <div class="console-card" id="consoleLog">
+        <div class="log-line log-info">[SYSTEM] Engine ready. Waiting for playback and ingestion...</div>
+      </div>
+    </div>
+
+    <div id="tab-collection" class="panel">
+      <div class="action-bar" style="margin-bottom: 15px;">
+        <h2>LIBRARY COLLECTION</h2>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span id="selectedCountBadge" style="font-size: 0.85rem; font-weight: bold; color: #fff;">0 tracks selected</span>
+          <button id="btnClearSelection" class="btn btn-danger" style="display: none;" onclick="clearAllSelections()">✖ unselect all</button>
+          <button class="btn btn-primary" onclick="createPlaylistFromSelection()">➕ Create Playlist with Selected</button>
+        </div>
+      </div>
+      
+      <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+        <input type="text" id="searchInput" class="search-input" style="margin-bottom:0;" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." onkeyup="filterCollection()">
+        <select id="folderFilter" class="search-input" style="width: 220px; margin-bottom:0;" onchange="filterCollection()">
+          <option value="ALL">📁 All Folders</option>
+          <option value="2008-2017">2008-2017</option>
+          <option value="2020">2020</option>
+          <option value="2022">2022</option>
+          <option value="2024">2024</option>
+          <option value="2025">2025</option>
+          <option value="2026">2026</option>
+          <option value="2026_IA_Music">2026_IA_Music</option>
+        </select>
+      </div>
+
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
+              <th>Play</th>
+              <th>Folder</th>
+              <th>Title / File</th>
+              <th>Artist</th>
+              <th>BPM</th>
+              <th>Key</th>
+              <th>Bitrate</th>
+            </tr>
+          </thead>
+          <tbody id="collectionTableBody">
+            <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading root catalog...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-playlists" class="panel">
+      <h2>PLAYLIST HISTORY & XML EXPORT</h2>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 5px; margin-bottom: 15px;">Playlists generated (.m3u8) and XML synchronization for Rekordbox / Engine DJ.</p>
+      <div id="playlists-container"></div>
+    </div>
+
+  </div>
+
+  <div class="audio-player-bar">
+    <div class="now-playing">
+      <div class="now-playing-title" id="player-title">Select a track</div>
+      <div class="now-playing-artist" id="player-artist">Nexus Music Player</div>
+    </div>
+    <audio id="globalAudioPlayer" controls src=""></audio>
+  </div>
+
+  <script>
+    const socket = io();
+    let collectionData = [];
+    let currentRenderedData = [];
+    
+    // Almacenamiento persisente de pistas seleccionadas (Map key: filePath, value: trackObject)
+    const globalSelectedTracks = new Map();
+
+    // Cargar métricas al iniciar
+    fetch('/api/stats')
+      .then(res => res.json())
+      .then(stats => {
+        document.getElementById('total-tracks').innerText = stats.totalTracks || 0;
+        document.getElementById('total-playlists').innerText = stats.totalPlaylists || 0;
+      })
+      .catch(err => console.error("Error al cargar stats:", err));
+
+    function showTab(tabName, evt) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+      if (evt) evt.target.classList.add('active');
+      if (tabName === 'collection') loadCollection();
+    }
+
+    function loadCollection() {
+      fetch('/api/collection')
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            collectionData = data;
+          } else {
+            console.error("Respuesta no válida del servidor:", data);
+            collectionData = [];
+          }
+          filterCollection();
+        })
+        .catch(err => {
+          console.error("Error al cargar la colección:", err);
+          collectionData = [];
+          filterCollection();
+        });
+    }
+
+    function filterCollection() {
+      if (!Array.isArray(collectionData)) {
+        collectionData = [];
+      }
+
+      const query = document.getElementById('searchInput').value.toLowerCase().trim();
+      const selectedFolder = document.getElementById('folderFilter').value;
+
+      const keywords = query ? query.split(/\s+/).filter(k => k.length > 0) : [];
+
+      const filtered = collectionData.filter(t => {
+        if (!t) return false;
+
+        if (selectedFolder !== 'ALL') {
+          const trackFolder = String(t.folder || t.filePath || '').toLowerCase();
+          if (!trackFolder.includes(selectedFolder.toLowerCase())) {
+            return false;
+          }
+        }
+
+        if (keywords.length === 0) return true;
+
+        const searchableText = [
+          t.title || '',
+          t.artist || '',
+          t.filename || '',
+          t.filePath || '',
+          t.folder || '',
+          t.key || '',
+          t.bpm || ''
+        ].join(' ').toLowerCase();
+
+        return keywords.every(kw => searchableText.includes(kw));
+      });
+
+      renderCollection(filtered);
+    }
+
+    function renderCollection(data) {
+      currentRenderedData = data;
+      const tbody = document.getElementById('collectionTableBody');
+      if (!data || data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">No se encontraron canciones en el filtro seleccionado.</td></tr>`;
+        updateSelectionUI();
+        return;
+      }
+
+      tbody.innerHTML = data.map((t, idx) => {
+        const trackKey = t.filePath || t.path || t.filename;
+        const isChecked = globalSelectedTracks.has(trackKey);
+
+        return `
+          <tr>
+            <td><input type="checkbox" class="track-select" data-idx="${idx}" ${isChecked ? 'checked' : ''} onchange="handleTrackSelectChange(this, ${idx})"></td>
+            <td><button class="btn-play" onclick="playTrackByIdx(${idx})">▶</button></td>
+            <td><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(t.folder || '')}</span></td>
+            <td><strong>${escapeHtml(t.title || t.filename || '')}</strong></td>
+            <td>${escapeHtml(t.artist || 'Desconocido')}</td>
+            <td>${t.bpm || '--'}</td>
+            <td><span class="badge-key">${t.key || '--'}</span></td>
+            <td>${t.bitrate ? t.bitrate + ' kbps' : 'N/A'}</td>
+          </tr>
+        `;
+      }).join('');
+
+      updateSelectionUI();
+    }
+
+    // Manejar selección individual de tracks
+    function handleTrackSelectChange(checkbox, idx) {
+      const track = currentRenderedData[idx];
+      if (!track) return;
+      
+      const trackKey = track.filePath || track.path || track.filename;
+
+      if (checkbox.checked) {
+        globalSelectedTracks.set(trackKey, track);
+      } else {
+        globalSelectedTracks.delete(trackKey);
+      }
+      updateSelectionUI();
+    }
+
+    // Actualizar el contador de pistas y visibilidad del botón de deseleccionar
+    function updateSelectionUI() {
+      const count = globalSelectedTracks.size;
+      const badge = document.getElementById('selectedCountBadge');
+      const btnClear = document.getElementById('btnClearSelection');
+      const selectAllCb = document.getElementById('selectAll');
+
+      badge.innerText = `${count} ${count === 1 ? 'pista seleccionada' : 'pistas seleccionadas'}`;
+      btnClear.style.display = count > 0 ? 'inline-block' : 'none';
+
+      // Verificar si todos los visibles en la tabla actual están marcados
+      if (currentRenderedData.length > 0) {
+        const allVisibleSelected = currentRenderedData.every(t => {
+          const trackKey = t.filePath || t.path || t.filename;
+          return globalSelectedTracks.has(trackKey);
+        });
+        if (selectAllCb) selectAllCb.checked = allVisibleSelected;
+      } else if (selectAllCb) {
+        selectAllCb.checked = false;
+      }
+    }
+
+    function toggleSelectAll(masterCb) {
+      currentRenderedData.forEach(track => {
+        const trackKey = track.filePath || track.path || track.filename;
+        if (masterCb.checked) {
+          globalSelectedTracks.set(trackKey, track);
+        } else {
+          globalSelectedTracks.delete(trackKey);
+        }
+      });
+
+      document.querySelectorAll('.track-select').forEach(cb => {
+        cb.checked = masterCb.checked;
+      });
+
+      updateSelectionUI();
+    }
+
+    function clearAllSelections() {
+      globalSelectedTracks.clear();
+      document.querySelectorAll('.track-select').forEach(cb => cb.checked = false);
+      const selectAllCb = document.getElementById('selectAll');
+      if (selectAllCb) selectAllCb.checked = false;
+      updateSelectionUI();
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function playTrackByIdx(idx) {
+      const track = currentRenderedData[idx];
+      if (!track) return;
+
+      const audioFilePath = track.filePath || track.path || track.location || track.file || '';
+
+      if (!audioFilePath) {
+        alert('No se encontró la ruta del archivo físico para esta canción.');
+        console.error('Track objeto sin ruta:', track);
+        return;
+      }
+
+      const player = document.getElementById('globalAudioPlayer');
+      document.getElementById('player-title').innerText = track.title || track.filename || 'Reproduciendo track...';
+      document.getElementById('player-artist').innerText = track.artist || 'Nexus Player';
+
+      const safePath = encodeURIComponent(audioFilePath);
+      player.src = `/audio-stream?path=${safePath}`;
+      player.play().catch(err => console.error("Error al reproducir audio:", err));
+    }
+
+    function createPlaylistFromSelection() {
+      const selectedTracks = Array.from(globalSelectedTracks.values());
+      const count = selectedTracks.length;
+
+      if (count === 0) return alert('Selecciona al menos una canción.');
+      
+      const playlistName = prompt(`Se agregarán ${count} canción(es) a la nueva playlist.\n\nNombre para la Playlist / Set:`);
+      if (!playlistName) return;
+
+      fetch('/api/playlists/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: playlistName, tracks: selectedTracks })
+      })
+      .then(res => res.json())
+      .then(res => {
+        alert(res.message || `¡Playlist creada con éxito! Se agregaron ${count} canciones.`);
+        clearAllSelections(); // Limpia la selección y desmarca checkboxes al completar
+      })
+      .catch(err => {
+        console.error("Error al crear la playlist:", err);
+        alert("Ocurrió un error al crear la playlist.");
+      });
+    }
+
+    function triggerScript(scriptName) {
+      socket.emit('run-script', { script: scriptName });
+    }
+
+    socket.on('log', (data) => {
+      const consoleLog = document.getElementById('consoleLog');
+      if (!consoleLog) return;
+      const line = document.createElement('div');
+      line.className = `log-line log-${data.type}`;
+      line.innerText = data.text;
+      consoleLog.appendChild(line);
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    });
+  </script>
+</body>
+</html>
