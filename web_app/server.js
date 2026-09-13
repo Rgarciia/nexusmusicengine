@@ -79,6 +79,60 @@ app.get('/api/collection', (req, res) => {
 });
 
 // ==========================================
+// API: Search Tracks (Windows Explorer Style)
+// ==========================================
+app.get('/api/search', (req, res) => {
+  try {
+    const query = req.query.q || req.query.query || '';
+
+    if (typeof dataManager.searchTracks === 'function') {
+      const results = dataManager.searchTracks(query);
+      return res.json(results);
+    }
+
+    // Fallback por si la función no estuviera disponible
+    res.json([]);
+  } catch (err) {
+    console.error('[ERROR IN /api/search]:', err);
+    res.json([]);
+  }
+});
+
+// ==========================================
+// API: Album Cover / Artwork Stream
+// ==========================================
+app.get('/api/cover', (req, res) => {
+  try {
+    const rawPath = req.query.path;
+    if (!rawPath) return res.status(400).send('Path required');
+
+    let fullFilePath = path.normalize(decodeURIComponent(rawPath).trim());
+    const trackDir = path.dirname(fullFilePath);
+
+    // Buscar imágenes de portada comunes en la carpeta de la canción
+    const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg', 'Cover.jpg', 'Folder.jpg'];
+    let foundCover = null;
+
+    for (const imgName of imageNames) {
+      const imgPath = path.join(trackDir, imgName);
+      if (fs.existsSync(imgPath)) {
+        foundCover = imgPath;
+        break;
+      }
+    }
+
+    if (foundCover) {
+      return res.sendFile(foundCover);
+    }
+
+    // Si no existe portada en disco, responde con HTTP 404 (el frontend pondrá un icono por defecto)
+    res.status(404).send('No cover found');
+  } catch (err) {
+    res.status(500).send('Error retrieving cover');
+  }
+});
+
+// ==========================================
 // API: Secure Audio Streaming (AIFF / WAV / MP3)
 // ==========================================
 app.get('/audio-stream', (req, res) => {

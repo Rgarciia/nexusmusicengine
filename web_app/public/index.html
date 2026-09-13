@@ -103,7 +103,7 @@
       </div>
       
       <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-        <input type="text" id="searchInput" class="search-input" style="margin-bottom:0;" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." onkeyup="filterCollection()">
+        <input type="text" id="searchInput" class="search-input" style="margin-bottom:0;" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." oninput="onSearchInput(this.value)">
         <select id="folderFilter" class="search-input" style="width: 220px; margin-bottom:0;" onchange="filterCollection()">
           <option value="ALL">📁 All Folders</option>
         </select>
@@ -119,13 +119,14 @@
               <th>Folder</th>
               <th>Title / File</th>
               <th>Artist</th>
+              <th>Album</th>
               <th>BPM</th>
               <th>Key</th>
               <th>Bits</th>
             </tr>
           </thead>
           <tbody id="collectionTableBody">
-            <tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading catalog...</td></tr>
+            <tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading catalog...</td></tr>
           </tbody>
         </table>
       </div>
@@ -152,6 +153,7 @@
     let collectionData = [];
     let currentRenderedData = [];
     const globalSelectedTracks = new Map();
+    let searchTimeout = null;
 
     function updateStats() {
       fetch('/api/stats')
@@ -168,7 +170,10 @@
     // Auto-update stats and collection every 10 seconds in the background without refreshing
     setInterval(() => {
       updateStats();
-      loadCollection(true);
+      const searchVal = document.getElementById('searchInput').value;
+      if (!searchVal.trim()) {
+        loadCollection(true);
+      }
     }, 10000);
 
     function showTab(tabName, evt) {
@@ -205,6 +210,30 @@
         .catch(err => {
           if (!silent) console.error("Error loading collection:", err);
         });
+    }
+
+    async function searchInServer(query) {
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const tracks = await response.json();
+        if (Array.isArray(tracks)) {
+          collectionData = tracks;
+          filterCollection();
+        }
+      } catch (error) {
+        console.error('Error in search:', error);
+      }
+    }
+
+    function onSearchInput(query) {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        if (query.trim().length > 0) {
+          searchInServer(query);
+        } else {
+          loadCollection();
+        }
+      }, 250);
     }
 
     function populateFolderDropdown() {
@@ -250,10 +279,7 @@
         collectionData = [];
       }
 
-      const query = document.getElementById('searchInput').value.toLowerCase().trim();
       const selectedFolder = document.getElementById('folderFilter').value;
-
-      const keywords = query ? query.split(/\s+/).filter(k => k.length > 0) : [];
 
       const filtered = collectionData.filter(t => {
         if (!t) return false;
@@ -266,20 +292,7 @@
           }
         }
 
-        if (keywords.length === 0) return true;
-
-        const searchableText = [
-          t.title || '',
-          t.artist || '',
-          t.filename || '',
-          t.filePath || '',
-          t.folder || extractFolderName(t),
-          t.key || '',
-          t.bpm || '',
-          getAudioFormat(t)
-        ].join(' ').toLowerCase();
-
-        return keywords.every(kw => searchableText.includes(kw));
+        return true;
       });
 
       renderCollection(filtered);
@@ -289,7 +302,7 @@
       currentRenderedData = data;
       const tbody = document.getElementById('collectionTableBody');
       if (!data || data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">No tracks found for the selected filter.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 20px;">No tracks found for the selected filter.</td></tr>`;
         updateSelectionUI();
         return;
       }
@@ -299,6 +312,7 @@
         const isChecked = globalSelectedTracks.has(trackKey);
         const formatLabel = getAudioFormat(t);
         const folderLabel = extractFolderName(t);
+        const coverUrl = `/api/cover?path=${encodeURIComponent(t.filePath || t.path)}`;
 
         return `
           <tr>
@@ -306,8 +320,16 @@
             <td><button class="btn-play" onclick="playTrackByIdx(${idx})">▶</button></td>
             <td><span class="badge-fmt">${escapeHtml(formatLabel)}</span></td>
             <td><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(folderLabel)}</span></td>
-            <td><strong>${escapeHtml(t.title || t.filename || '')}</strong></td>
+            <td>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <img src="${coverUrl}" 
+                     onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'34\' height=\'34\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%238e8e9a\' stroke-width=\'2\'><rect x=\'3\' y=\'3\' width=\'18\' height=\'18\' rx=\'2\'/><circle cx=\'12\' cy=\'12\' r=\'4\'/></svg>';" 
+                     style="width: 34px; height: 34px; border-radius: 4px; object-fit: cover; background: #1a1a20; flex-shrink: 0;" />
+                <strong>${escapeHtml(t.title || t.filename || '')}</strong>
+              </div>
+            </td>
             <td>${escapeHtml(t.artist || 'Unknown')}</td>
+            <td><span style="color: var(--text-muted);">${escapeHtml(t.album || 'Single / Unknown')}</span></td>
             <td>${t.bpm || '--'}</td>
             <td><span class="badge-key">${t.key || '--'}</span></td>
             <td>${t.bitrate ? t.bitrate + ' kbps' : 'N/A'}</td>

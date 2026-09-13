@@ -50,7 +50,7 @@ function renderTrackList(tracks) {
   container.innerHTML = '';
 
   if (!tracks || tracks.length === 0) {
-    container.innerHTML = '<p style="padding: 10px; color: #888;">No se encontraron canciones.</p>';
+    container.innerHTML = '<p style="padding: 10px; color: #888;">tracks not found.</p>';
     return;
   }
 
@@ -74,7 +74,7 @@ function renderTrackList(tracks) {
         onchange="toggleTrackSelection('${safePath}', this.checked)"
       />
       <span style="flex-grow: 1;">${title}</span>
-      <button onclick="playAudio('${safePath}')" style="padding: 4px 8px; cursor: pointer;">▶ Reproducir</button>
+      <button onclick="playAudio('${safePath}')" style="padding: 4px 8px; cursor: pointer;">▶ Play</button>
     `;
 
     container.appendChild(trackRow);
@@ -126,12 +126,12 @@ async function submitPlaylist() {
   const tracksArray = Array.from(selectedTracks.keys());
 
   if (!playlistName) {
-    alert('Por favor ingresa un nombre para la playlist.');
+    alert('Please enter a name for the playlist.');
     return;
   }
 
   if (tracksArray.length === 0) {
-    alert('Selecciona al menos una pista antes de crear la playlist.');
+    alert('Select at least one track before creating the playlist.');
     return;
   }
 
@@ -145,7 +145,7 @@ async function submitPlaylist() {
     const data = await res.json();
 
     if (data.success) {
-      alert(`¡Playlist "${playlistName}" creada exitosamente con ${data.count} canciones!`);
+      alert(`Playlist "${playlistName}" created successfully with ${data.count} songs!`);
       nameInput.value = '';
       clearAllSelections();
     } else {
@@ -153,7 +153,7 @@ async function submitPlaylist() {
     }
   } catch (err) {
     console.error('Error al enviar la playlist:', err);
-    alert('Ocurrió un error al intentar guardar la playlist.');
+    alert('An error occurred while trying to save the playlist.');
   }
 }
 
@@ -173,5 +173,5 @@ function playAudio(trackPath) {
   }
 
   player.src = streamUrl;
-  player.play().catch(e => console.error('Error reproduciendo pista:', e));
+  player.play().catch(e => console.error('Error reproducing track:', e));
 }
