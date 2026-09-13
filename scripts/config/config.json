@@ -1,0 +1,22 @@
+{
+  "Version": "0.3.0",
+  "Paths": {
+    "SourcePath": "D:\\Downloads\\MusicIA",
+    "DestinationPath": "D:\\Music Library\\2026_IA_Music",
+    "TempPath": ".\\temp",
+    "LogsPath": ".\\logs",
+    "SevenZipExecutable": "C:\\Program Files\\7-Zip\\7z.exe"
+  },
+  "Audio": {
+    "SupportedExtensions": [".mp3", ".flac", ".wav", ".aiff", ".aif", ".aac", ".m4a", ".ogg", ".alac"]
+  },
+  "Covers": {
+    "AllowedNames": ["cover.jpg", "cover.jpeg", "folder.jpg", "folder.jpeg"]
+  },
+  "IgnoredExtensions": [".txt", ".pdf", ".url", ".html", ".gif", ".png", ".bmp", ".db", ".ini", ".cue", ".nfo"],
+  "CompressedExtensions": [".zip", ".rar", ".7z"],
+  "Options": {
+    "RecycleCompressedFiles": true,
+    "CleanTempFolderOnFinish": true
+  }
+}

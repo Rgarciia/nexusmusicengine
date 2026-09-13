@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Nexus Music Engine</title>
@@ -16,7 +16,7 @@
 
     .sidebar { width: 240px; background: var(--bg-sidebar); padding: 20px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
     .sidebar h2 { font-size: 1.1rem; }
-    .sidebar .subtitle { color: var(--accent); font-size: 0.75rem; font-weight: bold; margin-bottom: 25px; }
+    .sidebar .subtitle { color: #fff; font-size: 0.75rem; font-weight: bold; margin-bottom: 25px; }
     .nav-item { padding: 12px 10px; color: var(--text-muted); cursor: pointer; font-weight: 600; font-size: 0.88rem; border-radius: 6px; margin-bottom: 4px; }
     .nav-item.active, .nav-item:hover { color: #fff; background: #1a1a20; }
 
@@ -53,6 +53,7 @@
     th { background: #121216; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
     tr:hover { background: #1a1a20; }
     .badge-key { background: #1e293b; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
+    .badge-fmt { background: #2e1065; color: #c084fc; padding: 3px 8px; border-radius: 4px; font-weight: bold; text-transform: uppercase; }
     .btn-play { background: var(--accent); border: none; color: #fff; border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; justify-content: center; }
 
     .panel { display: none; }
@@ -63,7 +64,7 @@
 
   <div class="sidebar">
     <h2>NEXUS MUSIC</h2>
-    <div class="subtitle" style="color: #fff;">ENGINE MANAGER</div>
+    <div class="subtitle">ENGINE MANAGER</div>
     <div class="nav-item active" onclick="showTab('dashboard', event)">🏠 Dashboard / Home</div>
     <div class="nav-item" onclick="showTab('collection', event)">🎵 Play / Library</div>
     <div class="nav-item" onclick="showTab('playlists', event)">📂 Playlists & XML</div>
@@ -96,7 +97,7 @@
         <h2>LIBRARY COLLECTION</h2>
         <div style="display: flex; align-items: center; gap: 12px;">
           <span id="selectedCountBadge" style="font-size: 0.85rem; font-weight: bold; color: #fff;">0 tracks selected</span>
-          <button id="btnClearSelection" class="btn btn-danger" style="display: none;" onclick="clearAllSelections()">✖ unselect all</button>
+          <button id="btnClearSelection" class="btn btn-danger" style="display: none;" onclick="clearAllSelections()">✖ Unselect All</button>
           <button class="btn btn-primary" onclick="createPlaylistFromSelection()">➕ Create Playlist with Selected</button>
         </div>
       </div>
@@ -105,13 +106,6 @@
         <input type="text" id="searchInput" class="search-input" style="margin-bottom:0;" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." onkeyup="filterCollection()">
         <select id="folderFilter" class="search-input" style="width: 220px; margin-bottom:0;" onchange="filterCollection()">
           <option value="ALL">📁 All Folders</option>
-          <option value="2008-2017">2008-2017</option>
-          <option value="2020">2020</option>
-          <option value="2022">2022</option>
-          <option value="2024">2024</option>
-          <option value="2025">2025</option>
-          <option value="2026">2026</option>
-          <option value="2026_IA_Music">2026_IA_Music</option>
         </select>
       </div>
 
@@ -121,16 +115,17 @@
             <tr>
               <th><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
               <th>Play</th>
+              <th>Format</th>
               <th>Folder</th>
               <th>Title / File</th>
               <th>Artist</th>
               <th>BPM</th>
               <th>Key</th>
-              <th>Bitrate</th>
+              <th>Bits</th>
             </tr>
           </thead>
           <tbody id="collectionTableBody">
-            <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading root catalog...</td></tr>
+            <tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading catalog...</td></tr>
           </tbody>
         </table>
       </div>
@@ -156,18 +151,25 @@
     const socket = io();
     let collectionData = [];
     let currentRenderedData = [];
-    
-    // Almacenamiento persisente de pistas seleccionadas (Map key: filePath, value: trackObject)
     const globalSelectedTracks = new Map();
 
-    // Cargar métricas al iniciar
-    fetch('/api/stats')
-      .then(res => res.json())
-      .then(stats => {
-        document.getElementById('total-tracks').innerText = stats.totalTracks || 0;
-        document.getElementById('total-playlists').innerText = stats.totalPlaylists || 0;
-      })
-      .catch(err => console.error("Error al cargar stats:", err));
+    function updateStats() {
+      fetch('/api/stats')
+        .then(res => res.json())
+        .then(stats => {
+          document.getElementById('total-tracks').innerText = stats.totalTracks || 0;
+          document.getElementById('total-playlists').innerText = stats.totalPlaylists || 0;
+        })
+        .catch(err => console.error("Error loading stats:", err));
+    }
+
+    updateStats();
+
+    // Auto-update stats and collection every 10 seconds in the background without refreshing
+    setInterval(() => {
+      updateStats();
+      loadCollection(true);
+    }, 10000);
 
     function showTab(tabName, evt) {
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -177,23 +179,70 @@
       if (tabName === 'collection') loadCollection();
     }
 
-    function loadCollection() {
+    function extractFolderName(t) {
+      let rawFolder = t.folder || '';
+      if (!rawFolder && (t.filePath || t.path)) {
+        const fullPath = t.filePath || t.path;
+        const parts = fullPath.replace(/\\/g, '/').split('/');
+        if (parts.length > 1) {
+          rawFolder = parts[parts.length - 2];
+        }
+      }
+      return rawFolder.trim();
+    }
+
+    function loadCollection(silent = false) {
       fetch('/api/collection')
         .then(res => res.json())
         .then(data => {
-          if (Array.isArray(data)) {
-            collectionData = data;
-          } else {
-            console.error("Respuesta no válida del servidor:", data);
-            collectionData = [];
+          const newData = Array.isArray(data) ? data : [];
+          if (JSON.stringify(newData.length) !== JSON.stringify(collectionData.length) || !silent) {
+            collectionData = newData;
+            populateFolderDropdown();
+            filterCollection();
           }
-          filterCollection();
         })
         .catch(err => {
-          console.error("Error al cargar la colección:", err);
-          collectionData = [];
-          filterCollection();
+          if (!silent) console.error("Error loading collection:", err);
         });
+    }
+
+    function populateFolderDropdown() {
+      const select = document.getElementById('folderFilter');
+      const currentValue = select.value;
+      const foldersSet = new Set();
+
+      collectionData.forEach(t => {
+        if (!t) return;
+        const folderName = extractFolderName(t);
+        if (folderName) {
+          foldersSet.add(folderName);
+        }
+      });
+
+      const sortedFolders = Array.from(foldersSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+      let optionsHTML = `<option value="ALL">📁 All Folders</option>`;
+      sortedFolders.forEach(folder => {
+        optionsHTML += `<option value="${escapeHtml(folder)}">${escapeHtml(folder)}</option>`;
+      });
+
+      select.innerHTML = optionsHTML;
+
+      if (foldersSet.has(currentValue)) {
+        select.value = currentValue;
+      } else {
+        select.value = 'ALL';
+      }
+    }
+
+    function getAudioFormat(t) {
+      if (t.format) return String(t.format).toUpperCase().replace('.', '');
+      if (t.extension) return String(t.extension).toUpperCase().replace('.', '');
+      
+      const src = t.filename || t.filePath || t.path || '';
+      const extMatch = src.match(/\.([a-zA-Z0-9]+)$/);
+      return extMatch ? extMatch[1].toUpperCase() : 'AUDIO';
     }
 
     function filterCollection() {
@@ -210,8 +259,9 @@
         if (!t) return false;
 
         if (selectedFolder !== 'ALL') {
-          const trackFolder = String(t.folder || t.filePath || '').toLowerCase();
-          if (!trackFolder.includes(selectedFolder.toLowerCase())) {
+          const trackFolder = extractFolderName(t).toLowerCase();
+          const fullPath = String(t.filePath || t.path || '').toLowerCase();
+          if (!trackFolder.includes(selectedFolder.toLowerCase()) && !fullPath.includes(selectedFolder.toLowerCase())) {
             return false;
           }
         }
@@ -223,9 +273,10 @@
           t.artist || '',
           t.filename || '',
           t.filePath || '',
-          t.folder || '',
+          t.folder || extractFolderName(t),
           t.key || '',
-          t.bpm || ''
+          t.bpm || '',
+          getAudioFormat(t)
         ].join(' ').toLowerCase();
 
         return keywords.every(kw => searchableText.includes(kw));
@@ -238,7 +289,7 @@
       currentRenderedData = data;
       const tbody = document.getElementById('collectionTableBody');
       if (!data || data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">No se encontraron canciones en el filtro seleccionado.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">No tracks found for the selected filter.</td></tr>`;
         updateSelectionUI();
         return;
       }
@@ -246,14 +297,17 @@
       tbody.innerHTML = data.map((t, idx) => {
         const trackKey = t.filePath || t.path || t.filename;
         const isChecked = globalSelectedTracks.has(trackKey);
+        const formatLabel = getAudioFormat(t);
+        const folderLabel = extractFolderName(t);
 
         return `
           <tr>
             <td><input type="checkbox" class="track-select" data-idx="${idx}" ${isChecked ? 'checked' : ''} onchange="handleTrackSelectChange(this, ${idx})"></td>
             <td><button class="btn-play" onclick="playTrackByIdx(${idx})">▶</button></td>
-            <td><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(t.folder || '')}</span></td>
+            <td><span class="badge-fmt">${escapeHtml(formatLabel)}</span></td>
+            <td><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(folderLabel)}</span></td>
             <td><strong>${escapeHtml(t.title || t.filename || '')}</strong></td>
-            <td>${escapeHtml(t.artist || 'Desconocido')}</td>
+            <td>${escapeHtml(t.artist || 'Unknown')}</td>
             <td>${t.bpm || '--'}</td>
             <td><span class="badge-key">${t.key || '--'}</span></td>
             <td>${t.bitrate ? t.bitrate + ' kbps' : 'N/A'}</td>
@@ -264,7 +318,6 @@
       updateSelectionUI();
     }
 
-    // Manejar selección individual de tracks
     function handleTrackSelectChange(checkbox, idx) {
       const track = currentRenderedData[idx];
       if (!track) return;
@@ -279,17 +332,15 @@
       updateSelectionUI();
     }
 
-    // Actualizar el contador de pistas y visibilidad del botón de deseleccionar
     function updateSelectionUI() {
       const count = globalSelectedTracks.size;
       const badge = document.getElementById('selectedCountBadge');
       const btnClear = document.getElementById('btnClearSelection');
       const selectAllCb = document.getElementById('selectAll');
 
-      badge.innerText = `${count} ${count === 1 ? 'pista seleccionada' : 'pistas seleccionadas'}`;
+      badge.innerText = `${count} ${count === 1 ? 'track selected' : 'tracks selected'}`;
       btnClear.style.display = count > 0 ? 'inline-block' : 'none';
 
-      // Verificar si todos los visibles en la tabla actual están marcados
       if (currentRenderedData.length > 0) {
         const allVisibleSelected = currentRenderedData.every(t => {
           const trackKey = t.filePath || t.path || t.filename;
@@ -342,27 +393,26 @@
       const audioFilePath = track.filePath || track.path || track.location || track.file || '';
 
       if (!audioFilePath) {
-        alert('No se encontró la ruta del archivo físico para esta canción.');
-        console.error('Track objeto sin ruta:', track);
+        alert('File path not found for this track.');
         return;
       }
 
       const player = document.getElementById('globalAudioPlayer');
-      document.getElementById('player-title').innerText = track.title || track.filename || 'Reproduciendo track...';
+      document.getElementById('player-title').innerText = track.title || track.filename || 'Playing track...';
       document.getElementById('player-artist').innerText = track.artist || 'Nexus Player';
 
       const safePath = encodeURIComponent(audioFilePath);
       player.src = `/audio-stream?path=${safePath}`;
-      player.play().catch(err => console.error("Error al reproducir audio:", err));
+      player.play().catch(err => console.error("Error playing audio:", err));
     }
 
     function createPlaylistFromSelection() {
       const selectedTracks = Array.from(globalSelectedTracks.values());
       const count = selectedTracks.length;
 
-      if (count === 0) return alert('Selecciona al menos una canción.');
+      if (count === 0) return alert('Select at least one track.');
       
-      const playlistName = prompt(`Se agregarán ${count} canción(es) a la nueva playlist.\n\nNombre para la Playlist / Set:`);
+      const playlistName = prompt(`Adding ${count} track(s) to the new playlist.\n\nPlaylist / Set Name:`);
       if (!playlistName) return;
 
       fetch('/api/playlists/create', {
@@ -372,12 +422,12 @@
       })
       .then(res => res.json())
       .then(res => {
-        alert(res.message || `¡Playlist creada con éxito! Se agregaron ${count} canciones.`);
-        clearAllSelections(); // Limpia la selección y desmarca checkboxes al completar
+        alert(res.message || `Playlist created successfully with ${count} tracks.`);
+        clearAllSelections();
       })
       .catch(err => {
-        console.error("Error al crear la playlist:", err);
-        alert("Ocurrió un error al crear la playlist.");
+        console.error("Error creating playlist:", err);
+        alert("An error occurred while creating the playlist.");
       });
     }
 

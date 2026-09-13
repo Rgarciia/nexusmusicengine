@@ -1,0 +1,9 @@
+{
+  "ActiveProfile": "Default",
+  "Profiles": {
+    "Default": {
+      "FolderNamePrefix": "BestTracks",
+      "DateFormat": "yyyyMMdd_HHmm"
+    }
+  }
+}

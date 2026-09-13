@@ -5,6 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const dataManager = require('./data_manager');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 const server = http.createServer(app);
@@ -12,13 +15,13 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
-// Ruta principal de tu biblioteca musical en disco
+// Main root music library directory
 const MUSIC_ROOT_DIRECTORY = 'D:\\Music Library';
 
-// Ruta centralizada para guardar playlists de respaldo y lectura directa en Rekordbox
+// Centralized target directory to store backup playlists and direct Rekordbox reads
 const TARGET_PLAYLISTS_DIR = path.join(MUSIC_ROOT_DIRECTORY, 'playlistnexusmusic');
 
-// Asegurar existencia del directorio físico de Playlists en D:\Music Library
+// Ensure physical existence of target playlists directory in D:\Music Library
 if (!fs.existsSync(TARGET_PLAYLISTS_DIR)) {
   fs.mkdirSync(TARGET_PLAYLISTS_DIR, { recursive: true });
 }
@@ -28,7 +31,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ==========================================
-// API: Estadísticas principales
+// API: Main Statistics
 // ==========================================
 app.get('/api/stats', (req, res) => {
   try {
@@ -38,13 +41,13 @@ app.get('/api/stats', (req, res) => {
     }
     res.json(stats || { totalTracks: 0, totalPlaylists: 0 });
   } catch (err) {
-    console.error('Error al obtener estadísticas:', err);
+    console.error('Error fetching statistics:', err);
     res.json({ totalTracks: 0, totalPlaylists: 0 });
   }
 });
 
 // ==========================================
-// API: Colección completa (Carga mediante dataManager)
+// API: Full Collection Retrieval
 // ==========================================
 app.get('/api/collection', (req, res) => {
   try {
@@ -61,50 +64,63 @@ app.get('/api/collection', (req, res) => {
     }
 
     const count = Array.isArray(collection) ? collection.length : 0;
-    console.log(`[DEBUG] /api/collection llamado. Canciones cargadas: ${count}`);
+    console.log(`[DEBUG] /api/collection requested. Tracks loaded: ${count}`);
 
     if (Array.isArray(collection)) {
       res.json(collection);
     } else {
-      console.warn('[WARN] La función de dataManager no devolvió un Array válido.');
+      console.warn('[WARN] dataManager method did not return a valid Array.');
       res.json([]);
     }
   } catch (err) {
-    console.error('[ERROR EN GETCOLLECTIONDATA]:', err);
+    console.error('[ERROR IN GETCOLLECTIONDATA]:', err);
     res.json([]);
   }
 });
 
 // ==========================================
-// API: Streaming de audio seguro (AIFF / WAV / MP3)
+// API: Secure Audio Streaming (AIFF / WAV / MP3)
 // ==========================================
 app.get('/audio-stream', (req, res) => {
   try {
     const rawPath = req.query.path;
     if (!rawPath) {
-      return res.status(400).send('Ruta de archivo no proporcionada.');
+      return res.status(400).send('File path parameter is required.');
     }
 
     let cleanPath = decodeURIComponent(rawPath).trim();
     let fullFilePath = path.normalize(cleanPath);
 
-    // Si la ruta es relativa, construir con la raíz D:\Music Library
     if (!fs.existsSync(fullFilePath)) {
       fullFilePath = path.join(MUSIC_ROOT_DIRECTORY, cleanPath);
     }
 
     if (!fs.existsSync(fullFilePath)) {
-      console.error(`[AUDIO STREAM 404] Archivo no encontrado en disco: ${fullFilePath}`);
-      return res.status(404).send('El archivo de audio no existe en el disco.');
+      console.error(`[AUDIO STREAM 404] Audio file not found on disk: ${fullFilePath}`);
+      return res.status(404).send('Audio file does not exist on disk.');
     }
 
     const ext = path.extname(fullFilePath).toLowerCase();
-    
-    // Configurar cabeceras de transmisión para HTML5 y soporte AIFF
-    res.setHeader('Accept-Ranges', 'bytes');
+
+    // ON-THE-FLY TRANSCODING FOR AIFF / AIF FILES
     if (ext === '.aiff' || ext === '.aif') {
-      res.setHeader('Content-Type', 'audio/x-aiff');
-    } else if (ext === '.wav') {
+      res.setHeader('Content-Type', 'audio/wav');
+      
+      ffmpeg(fullFilePath)
+        .toFormat('wav')
+        .on('error', (err) => {
+          if (err.code !== 'ECONNRESET' && !res.headersSent) {
+            console.error('[FFMPEG STREAM ERROR]:', err.message);
+          }
+        })
+        .pipe(res, { end: true });
+
+      return;
+    }
+
+    // DIRECT NATIVE STREAMING (MP3, WAV, ETC.)
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (ext === '.wav') {
       res.setHeader('Content-Type', 'audio/wav');
     } else if (ext === '.mp3') {
       res.setHeader('Content-Type', 'audio/mpeg');
@@ -113,21 +129,22 @@ app.get('/audio-stream', (req, res) => {
     res.sendFile(fullFilePath, (err) => {
       if (err) {
         if (err.code !== 'ECONNABORTED' && !res.headersSent) {
-          console.error(`[AUDIO STREAM ERROR] Error al enviar archivo (${fullFilePath}):`, err);
-          res.status(500).send('Error al transmitir el audio.');
+          console.error(`[AUDIO STREAM ERROR] Failed to send audio file (${fullFilePath}):`, err);
+          res.status(500).send('Error streaming audio file.');
         }
       }
     });
+
   } catch (error) {
-    console.error('Error interno al servir streaming de audio:', error);
+    console.error('Internal server error while processing audio stream:', error);
     if (!res.headersSent) {
-      res.status(500).send('Error interno en el servidor de streaming.');
+      res.status(500).send('Internal audio streaming server error.');
     }
   }
 });
 
 // ==========================================
-// API: Crear y guardar Playlist en D:\Music Library\playlistnexusmusic (.m3u8)
+// API: Create & Save Playlist in D:\Music Library\playlistnexusmusic (.m3u8)
 // ==========================================
 app.post('/api/playlists/create', (req, res) => {
   try {
@@ -136,10 +153,10 @@ app.post('/api/playlists/create', (req, res) => {
     const selectedTracks = tracks || req.body.selectedTracks;
 
     if (!playlistName || !selectedTracks || !Array.isArray(selectedTracks) || selectedTracks.length === 0) {
-      return res.status(400).json({ error: 'Nombre de playlist o canciones seleccionadas no válidas.' });
+      return res.status(400).json({ error: 'Invalid playlist name or empty tracks selection.' });
     }
 
-    // Procesar a través de dataManager si aplica
+    // Process via dataManager if available
     let dataManagerResult = null;
     if (typeof dataManager.createPlaylist === 'function') {
       dataManagerResult = dataManager.createPlaylist(playlistName, selectedTracks);
@@ -153,42 +170,42 @@ app.post('/api/playlists/create', (req, res) => {
     selectedTracks.forEach(track => {
       let trackPath = typeof track === 'object' ? (track.path || track.filePath || track.url) : track;
       if (trackPath) {
-        // Convertir rutas relativas a absolutas basadas en D:\Music Library
+        // Convert relative paths to absolute based on D:\Music Library
         if (!path.isAbsolute(trackPath)) {
           trackPath = path.join(MUSIC_ROOT_DIRECTORY, trackPath);
         }
 
-        // Formatear separadores exactos de Windows (D:\Music Library\...)
+        // Format exact Windows separators (D:\Music Library\...)
         const absolutePath = path.win32.normalize(trackPath);
         const fileNameWithoutExt = path.basename(absolutePath, path.extname(absolutePath));
 
-        // Cabecera extendida para reconocimiento automático en Rekordbox
+        // Extended M3U header for Rekordbox / Engine DJ compatibility
         m3uContent += `#EXTINF:-1,${fileNameWithoutExt}\n`;
         m3uContent += `${absolutePath}\n`;
       }
     });
 
-    // Guardar exclusivamente .m3u8 con BOM UTF-8
+    // Write exclusively as .m3u8 with UTF-8 BOM
     fs.writeFileSync(filePathM3U8, '\ufeff' + m3uContent, 'utf8');
 
-    console.log(`[PLAYLIST CREADA] "${safeFileName}.m3u8" (${selectedTracks.length} tracks) guardada en ${TARGET_PLAYLISTS_DIR}`);
+    console.log(`[PLAYLIST CREATED] "${safeFileName}.m3u8" (${selectedTracks.length} tracks) saved to ${TARGET_PLAYLISTS_DIR}`);
 
     res.json({ 
       success: true, 
       count: selectedTracks.length,
-      message: `Playlist "${safeFileName}" creada con ${selectedTracks.length} canciones en D:\\Music Library\\playlistnexusmusic`,
+      message: `Playlist "${safeFileName}" created with ${selectedTracks.length} track(s) in D:\\Music Library\\playlistnexusmusic`,
       folder: TARGET_PLAYLISTS_DIR,
       playlist: dataManagerResult,
       file: `${safeFileName}.m3u8`
     });
   } catch (err) {
-    console.error('Error al crear playlist:', err);
+    console.error('Error creating playlist:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ==========================================
-// API: Listar Playlists creadas (.m3u8)
+// API: List Created Playlists (.m3u8)
 // ==========================================
 app.get('/api/playlists', (req, res) => {
   try {
@@ -198,26 +215,26 @@ app.get('/api/playlists', (req, res) => {
     }
     res.json([]);
   } catch (err) {
-    console.error('Error al leer las playlists:', err);
+    console.error('Error reading playlists directory:', err);
     res.json([]);
   }
 });
 
 // ==========================================
-// WebSockets: Ejecución de scripts de PowerShell
+// WebSockets: Real-time PowerShell Execution
 // ==========================================
 io.on('connection', (socket) => {
-  socket.emit('log', { type: 'info', text: '[SYSTEM] Conexión establecida con la consola en vivo.' });
+  socket.emit('log', { type: 'info', text: '[SYSTEM] Connection established with live console.' });
 
   socket.on('run-script', ({ script }) => {
     const scriptPath = path.resolve(__dirname, '../scripts', script);
     
     if (!fs.existsSync(scriptPath)) {
-      socket.emit('log', { type: 'error', text: `[ERROR] El script ${script} no fue encontrado en /scripts.` });
+      socket.emit('log', { type: 'error', text: `[ERROR] The script ${script} was not found in /scripts.` });
       return;
     }
 
-    socket.emit('log', { type: 'warning', text: `[EXEC] Ejecutando ${script}...` });
+    socket.emit('log', { type: 'warning', text: `[EXEC] Executing ${script}...` });
 
     const ps = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
 
@@ -231,27 +248,27 @@ io.on('connection', (socket) => {
 
     ps.on('close', (code) => {
       if (code === 0) {
-        socket.emit('log', { type: 'success', text: `[SUCCESS] ${script} finalizó correctamente.` });
+        socket.emit('log', { type: 'success', text: `[SUCCESS] ${script} completed successfully.` });
       } else {
-        socket.emit('log', { type: 'error', text: `[ERROR] ${script} terminó con código de salida ${code}.` });
+        socket.emit('log', { type: 'error', text: `[ERROR] ${script} finished with exit code ${code}.` });
       }
     });
   });
 });
 
-// Ruta de fallback universal (Middleware 404/SPA compatible con Node.js v24)
+// Universal SPA / Static Fallback Route
 app.use((req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.send('Servidor activo. Revisa que la carpeta public/ contenga index.html');
+    res.send('Server is running. Please check that the public/ folder contains index.html');
   }
 });
 
-// Iniciar servidor HTTP con Socket.IO
+// Start HTTP & Socket.IO Server
 server.listen(PORT, () => {
-  console.log(`Server corriendo en http://localhost:${PORT}`);
-  console.log(`Ruta raíz de música configurada en: ${MUSIC_ROOT_DIRECTORY}`);
-  console.log(`Carpeta de playlists configurada en: ${TARGET_PLAYLISTS_DIR}`);
+  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Music root directory configured at: ${MUSIC_ROOT_DIRECTORY}`);
+  console.log(`Target playlists directory configured at: ${TARGET_PLAYLISTS_DIR}`);
 });
