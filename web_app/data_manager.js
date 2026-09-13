@@ -7,6 +7,8 @@ let parseFile;
   try {
     const mm = await import('music-metadata');
     parseFile = mm.parseFile;
+    // Iniciar parseo de metadatos una vez cargado el módulo
+    parseMetadataInBackground();
   } catch (err) {
     console.warn('[WARN] music-metadata not loaded yet or failed to load:', err.message);
   }
@@ -14,6 +16,12 @@ let parseFile;
 
 const MUSIC_ROOT_DIRECTORY = 'D:\\Music Library';
 const SUPPORTED_EXTENSIONS = new Set(['.mp3', '.wav', '.aiff', '.aif', '.flac', '.m4a']);
+
+// ==========================================
+// CACHÉ EN MEMORIA (IN-MEMORY DATABASE)
+// ==========================================
+let cachedCollection = [];
+let isParsingMetadata = false;
 
 /**
  * Parsea el nombre del archivo como fallback rápido si no hay tags ID3 cargados.
@@ -44,7 +52,7 @@ function parseTrackDetails(fileName) {
 }
 
 /**
- * Escanea dinámicamente D:\Music Library.
+ * Escanea la carpeta en disco y construye la colección.
  */
 function scanMusicDirectory(dirPath = MUSIC_ROOT_DIRECTORY) {
   let results = [];
@@ -71,7 +79,7 @@ function scanMusicDirectory(dirPath = MUSIC_ROOT_DIRECTORY) {
           const relativePath = path.relative(MUSIC_ROOT_DIRECTORY, fullPath);
           const pathParts = relativePath.split(path.sep);
           const folderName = pathParts.length > 1 ? pathParts[0] : 'Raíz';
-          const albumName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : 'Single / Unknown Album';
+          const albumFallback = pathParts.length > 1 ? pathParts[pathParts.length - 2] : '';
 
           const { artist, title } = parseTrackDetails(item.name);
 
@@ -80,13 +88,14 @@ function scanMusicDirectory(dirPath = MUSIC_ROOT_DIRECTORY) {
             filePath: fullPath,
             path: fullPath,
             folder: folderName,
-            album: albumName,
+            album: albumFallback || 'Single / Unknown Album',
             format: ext.replace('.', '').toUpperCase(),
             title: title,
             artist: artist,
             bpm: '--',
             key: '--',
-            bitrate: null
+            bitrate: null,
+            hasMetadata: false
           });
         }
       }
@@ -99,13 +108,55 @@ function scanMusicDirectory(dirPath = MUSIC_ROOT_DIRECTORY) {
 }
 
 /**
- * Búsqueda Inteligente Priorizada:
- * 1. Coincidencia directa en Título o Artista (Metadatos/Metadata limpia).
- * 2. Coincidencia en Nombre de Archivo.
- * 3. Coincidencia en Nombre de Carpeta (FallBack).
+ * Carga o refresca la memoria RAM.
+ */
+function loadCollection() {
+  console.log('⚡ [DATA MANAGER] Indexando biblioteca musical en memoria RAM...');
+  const start = Date.now();
+  cachedCollection = scanMusicDirectory();
+  console.log(`🚀 [DATA MANAGER] ${cachedCollection.length} pistas cargadas en RAM (${Date.now() - start}ms).`);
+  parseMetadataInBackground();
+  return cachedCollection;
+}
+
+/**
+ * Lee metadatos reales (ID3, BPM, Key, Album) sin bloquear las búsquedas ni el audio.
+ */
+async function parseMetadataInBackground() {
+  if (isParsingMetadata || !parseFile || cachedCollection.length === 0) return;
+  isParsingMetadata = true;
+
+  for (let track of cachedCollection) {
+    if (track.hasMetadata) continue;
+    try {
+      const metadata = await parseFile(track.filePath, { skipCovers: true });
+      if (metadata.common) {
+        if (metadata.common.title) track.title = metadata.common.title;
+        if (metadata.common.artist) track.artist = metadata.common.artist;
+        if (metadata.common.album) track.album = metadata.common.album;
+        if (metadata.common.bpm) track.bpm = Math.round(metadata.common.bpm);
+        if (metadata.common.initialKey) track.key = metadata.common.initialKey;
+      }
+      if (metadata.format && metadata.format.bitrate) {
+        track.bitrate = Math.round(metadata.format.bitrate / 1000);
+      }
+      track.hasMetadata = true;
+    } catch (e) {
+      track.hasMetadata = true; // Evitar reintentar archivos dañados
+    }
+  }
+  isParsingMetadata = false;
+}
+
+// Inicialización automática de la RAM al arrancar el servidor
+loadCollection();
+
+/**
+ * Búsqueda Inteligente Ultra-Rápida sobre RAM.
  */
 function searchTracks(query) {
-  const collection = scanMusicDirectory();
+  const collection = cachedCollection.length > 0 ? cachedCollection : getCollectionData();
+  
   if (!query || typeof query !== 'string' || !query.trim()) {
     return collection;
   }
@@ -120,7 +171,6 @@ function searchTracks(query) {
     const folderText = (track.folder || '').toLowerCase();
     const fullPathText = (track.path || '').toLowerCase();
 
-    // Comprobar que todas las palabras clave estén presentes en alguna de las dimensiones
     return keywords.every(keyword => {
       return (
         titleText.includes(keyword) ||
@@ -132,7 +182,6 @@ function searchTracks(query) {
       );
     });
   }).sort((a, b) => {
-    // Priorizar los resultados donde la palabra clave esté en el Artista o Título de la pista
     const firstKeyword = keywords[0];
     const aMatchMetadata = (a.title || '').toLowerCase().includes(firstKeyword) || (a.artist || '').toLowerCase().includes(firstKeyword);
     const bMatchMetadata = (b.title || '').toLowerCase().includes(firstKeyword) || (b.artist || '').toLowerCase().includes(firstKeyword);
@@ -144,11 +193,14 @@ function searchTracks(query) {
 }
 
 function getCollectionData() {
-  return scanMusicDirectory();
+  if (cachedCollection.length === 0) {
+    return loadCollection();
+  }
+  return cachedCollection;
 }
 
 function getStats() {
-  const collection = scanMusicDirectory();
+  const collection = getCollectionData();
   
   let playlistsCount = 0;
   const playlistsDir = path.join(MUSIC_ROOT_DIRECTORY, 'playlistnexusmusic');
@@ -168,5 +220,8 @@ module.exports = {
   getAllTracks: getCollectionData,
   getTracks: getCollectionData,
   getStats,
-  searchTracks
+  searchTracks,
+  loadCollection,
+  reload: loadCollection,
+  init: loadCollection
 };

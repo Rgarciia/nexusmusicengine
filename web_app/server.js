@@ -20,6 +20,7 @@ const MUSIC_ROOT_DIRECTORY = 'D:\\Music Library';
 
 // Centralized target directory to store backup playlists and direct Rekordbox reads
 const TARGET_PLAYLISTS_DIR = path.join(MUSIC_ROOT_DIRECTORY, 'playlistnexusmusic');
+const DEFAULT_COVER_PATH = path.join(__dirname, 'public', 'images', 'default-cover.png');
 
 // Ensure physical existence of target playlists directory in D:\Music Library
 if (!fs.existsSync(TARGET_PLAYLISTS_DIR)) {
@@ -29,6 +30,40 @@ if (!fs.existsSync(TARGET_PLAYLISTS_DIR)) {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ==========================================
+// BACKGROUND WATCHDOG / AUTO-SYNC SYSTEM
+// ==========================================
+let watchDebounceTimeout = null;
+
+if (fs.existsSync(MUSIC_ROOT_DIRECTORY)) {
+  try {
+    fs.watch(MUSIC_ROOT_DIRECTORY, { recursive: true }, (eventType, filename) => {
+      // Ignorar cambios en la propia carpeta de playlists para evitar bucles infinitos
+      if (filename && filename.includes('playlistnexusmusic')) return;
+      if (filename && !/\.(mp3|wav|flac|m4a|aac|ogg|aiff|aif)$/i.test(filename)) return;
+
+      // Anti-rebote (debounce) para esperar a que terminen de copiarse los archivos
+      clearTimeout(watchDebounceTimeout);
+      watchDebounceTimeout = setTimeout(() => {
+        console.log(`🔄 [AUTO-SYNC] Change detected (${eventType}: ${filename}). Reloading catalog...`);
+        
+        if (typeof dataManager.loadCollection === 'function') {
+          dataManager.loadCollection();
+        } else if (typeof dataManager.init === 'function') {
+          dataManager.init();
+        } else if (typeof dataManager.reload === 'function') {
+          dataManager.reload();
+        }
+
+        io.emit('catalog-updated', { time: Date.now() });
+      }, 1500);
+    });
+    console.log(`👁️ [WATCHDOG] Active file watcher listening on ${MUSIC_ROOT_DIRECTORY}`);
+  } catch (err) {
+    console.warn(`[WATCHDOG WARN] Could not initialize fs.watch:`, err.message);
+  }
+}
 
 // ==========================================
 // API: Main Statistics
@@ -99,41 +134,48 @@ app.get('/api/search', (req, res) => {
 });
 
 // ==========================================
-// API: Album Cover / Artwork Stream
+// API: Album Cover / Artwork Stream + Default Fallback
 // ==========================================
 app.get('/api/cover', (req, res) => {
   try {
     const rawPath = req.query.path;
-    if (!rawPath) return res.status(400).send('Path required');
+    if (rawPath) {
+      let fullFilePath = path.normalize(decodeURIComponent(rawPath).trim());
+      const trackDir = path.dirname(fullFilePath);
 
-    let fullFilePath = path.normalize(decodeURIComponent(rawPath).trim());
-    const trackDir = path.dirname(fullFilePath);
+      // Buscar imágenes de portada comunes en la carpeta de la canción
+      const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg', 'Cover.jpg', 'Folder.jpg'];
+      let foundCover = null;
 
-    // Buscar imágenes de portada comunes en la carpeta de la canción
-    const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg', 'Cover.jpg', 'Folder.jpg'];
-    let foundCover = null;
+      for (const imgName of imageNames) {
+        const imgPath = path.join(trackDir, imgName);
+        if (fs.existsSync(imgPath)) {
+          foundCover = imgPath;
+          break;
+        }
+      }
 
-    for (const imgName of imageNames) {
-      const imgPath = path.join(trackDir, imgName);
-      if (fs.existsSync(imgPath)) {
-        foundCover = imgPath;
-        break;
+      if (foundCover) {
+        return res.sendFile(foundCover);
       }
     }
 
-    if (foundCover) {
-      return res.sendFile(foundCover);
+    // Fallback: Si no existe la carátula o no se especificó ruta, entrega la imagen por defecto
+    if (fs.existsSync(DEFAULT_COVER_PATH)) {
+      return res.sendFile(DEFAULT_COVER_PATH);
     }
 
-    // Si no existe portada en disco, responde con HTTP 404 (el frontend pondrá un icono por defecto)
     res.status(404).send('No cover found');
   } catch (err) {
+    if (fs.existsSync(DEFAULT_COVER_PATH)) {
+      return res.sendFile(DEFAULT_COVER_PATH);
+    }
     res.status(500).send('Error retrieving cover');
   }
 });
 
 // ==========================================
-// API: Secure Audio Streaming (AIFF / WAV / MP3)
+// API: Secure Audio Streaming (HTTP Range 206 + High Performance)
 // ==========================================
 app.get('/audio-stream', (req, res) => {
   try {
@@ -156,7 +198,7 @@ app.get('/audio-stream', (req, res) => {
 
     const ext = path.extname(fullFilePath).toLowerCase();
 
-    // ON-THE-FLY TRANSCODING FOR AIFF / AIF FILES
+    // TRANSCODIFICACIÓN EN TIEMPO REAL PARA ARCHIVOS .AIFF / .AIF
     if (ext === '.aiff' || ext === '.aif') {
       res.setHeader('Content-Type', 'audio/wav');
       
@@ -172,22 +214,47 @@ app.get('/audio-stream', (req, res) => {
       return;
     }
 
-    // DIRECT NATIVE STREAMING (MP3, WAV, ETC.)
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (ext === '.wav') {
-      res.setHeader('Content-Type', 'audio/wav');
-    } else if (ext === '.mp3') {
-      res.setHeader('Content-Type', 'audio/mpeg');
-    }
+    // STREAMING POR RANGOS HTTP (206 PARTIAL CONTENT)
+    const stat = fs.statSync(fullFilePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
 
-    res.sendFile(fullFilePath, (err) => {
-      if (err) {
-        if (err.code !== 'ECONNABORTED' && !res.headersSent) {
-          console.error(`[AUDIO STREAM ERROR] Failed to send audio file (${fullFilePath}):`, err);
-          res.status(500).send('Error streaming audio file.');
-        }
-      }
-    });
+    const mimeTypes = {
+      '.mp3': 'audio/mpeg',
+      '.wav': 'audio/wav',
+      '.flac': 'audio/flac',
+      '.m4a': 'audio/mp4',
+      '.aac': 'audio/aac',
+      '.ogg': 'audio/ogg'
+    };
+    const contentType = mimeTypes[ext] || 'audio/mpeg';
+
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      const chunksize = (end - start) + 1;
+      const stream = fs.createReadStream(fullFilePath, { start, end });
+      
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': contentType,
+      };
+
+      res.writeHead(206, head);
+      stream.pipe(res);
+    } else {
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes'
+      };
+      res.writeHead(200, head);
+      fs.createReadStream(fullFilePath).pipe(res);
+    }
 
   } catch (error) {
     console.error('Internal server error while processing audio stream:', error);

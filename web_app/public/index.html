@@ -4,23 +4,41 @@
   <meta charset="UTF-8">
   <title>Nexus Music Engine</title>
   <link rel="stylesheet" href="css/style.css">
+  
+  <!-- Iconos favicon optimizados para la pestaña del navegador -->
+  <link rel="icon" type="image/png" sizes="32x32" href="images/logo.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="images/logo.png">
+  
   <script src="/socket.io/socket.io.js"></script>
   <style>
     :root {
       --bg-main: #09090b; --bg-sidebar: #121214; --bg-card: #18181c;
-      --accent: #007aff; --warning: #eab308; --success: #34c759;
+      --accent: #10b981; --accent-hover: #059669; --warning: #eab308; --success: #34c759;
       --error: #ef4444; --text-muted: #8e8e9a; --border: #222228;
+      --waveform-cyan: #00d2ff;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-main); color: #fff; display: flex; height: 100vh; overflow: hidden; }
 
-    .sidebar { width: 240px; background: var(--bg-sidebar); padding: 20px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-    .sidebar h2 { font-size: 1.1rem; }
-    .sidebar .subtitle { color: #fff; font-size: 0.75rem; font-weight: bold; margin-bottom: 25px; }
+    .sidebar { width: 240px; min-width: 240px; background: var(--bg-sidebar); padding: 20px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    
+    /* ESTILOS DEL BRANDING Y LOGO BLANCO NITIDO */
+    .brand-container { display: flex; align-items: center; gap: 12px; margin-bottom: 25px; }
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      object-fit: contain;
+      filter: brightness(0) invert(1);
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edges;
+    }
+    .brand-text h2 { font-size: 1.05rem; color: #10b981; font-weight: 800; letter-spacing: 0.5px; line-height: 1.1; margin: 0; }
+    .sidebar .subtitle { color: var(--text-muted); font-size: 0.72rem; font-weight: bold; margin-bottom: 0; }
+
     .nav-item { padding: 12px 10px; color: var(--text-muted); cursor: pointer; font-weight: 600; font-size: 0.88rem; border-radius: 6px; margin-bottom: 4px; }
     .nav-item.active, .nav-item:hover { color: #fff; background: #1a1a20; }
 
-    .content { flex: 1; padding: 25px; padding-bottom: 90px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+    .content { flex: 1; padding: 25px; padding-bottom: 95px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
     
     .action-bar { display: flex; justify-content: space-between; align-items: center; }
     .btn { background: var(--bg-card); color: #fff; border: 1px solid var(--border); padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 0.82rem; cursor: pointer; }
@@ -39,22 +57,97 @@
     .log-error { color: var(--error); font-weight: bold; }
     .log-success { color: var(--success); font-weight: bold; }
 
-    .audio-player-bar { position: fixed; bottom: 0; left: 240px; right: 0; height: 75px; background: #121216; border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 25px; justify-content: space-between; z-index: 100; }
-    .now-playing { font-size: 0.85rem; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .now-playing-title { font-weight: bold; color: #fff; }
-    .now-playing-artist { color: var(--text-muted); font-size: 0.78rem; }
-    audio { height: 40px; outline: none; width: 50%; }
+    /* BARRA DE REPRODUCCIÓN COMPLETA EN EL FOOTER (LEFT: 0) */
+    .audio-player-bar {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 80px;
+      background: #0b0c10; border-top: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 25px; justify-content: space-between; gap: 20px;
+      z-index: 999;
+      transform: translateY(100%);
+      transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 -10px 25px rgba(0, 0, 0, 0.5);
+    }
+    .audio-player-bar.visible { transform: translateY(0); }
 
-    .search-input { width: 100%; padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: #fff; margin-bottom: 15px; outline: none; }
+    .now-playing-container { display: flex; align-items: center; gap: 14px; width: 300px; min-width: 220px; }
+    .now-playing-cover { width: 50px; height: 50px; border-radius: 6px; object-fit: cover; background: #1a1a20; border: 1px solid var(--border); flex-shrink: 0; }
+    .now-playing-info { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .now-playing-title { font-weight: bold; color: #fff; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; }
+    .now-playing-artist { color: var(--text-muted); font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+
+    /* CONTROLES CUADRADOS DE REPRODUCCIÓN */
+    .player-controls { display: flex; align-items: center; gap: 8px; }
+    .btn-control {
+      background: #10b981; border: none; color: #000; font-size: 1rem; cursor: pointer;
+      width: 42px; height: 42px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s ease; font-weight: bold;
+    }
+    .btn-control:hover { background: #059669; color: #fff; transform: scale(1.05); }
+    .btn-control-main { width: 46px; height: 46px; font-size: 1.2rem; }
+
+    /* LÍNEA DE TIEMPO / WAVEFORM BEATPORT */
+    .waveform-container { flex: 1; display: flex; align-items: center; gap: 14px; max-width: 800px; }
+    .time-display { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; min-width: 85px; text-align: right; font-weight: 600; }
+    .waveform-wrapper { flex: 1; height: 42px; background: #121318; border-radius: 6px; position: relative; cursor: pointer; overflow: hidden; border: 1px solid #22232d; }
+    
+    .waveform-bg {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background-image: repeating-linear-gradient(90deg, rgba(0, 210, 255, 0.4) 0px, rgba(0, 210, 255, 0.4) 2px, transparent 2px, transparent 4px);
+      mask-image: radial-gradient(ellipse at center, black 70%, transparent 100%);
+      opacity: 0.35;
+    }
+    .waveform-progress {
+      position: absolute; top: 0; left: 0; height: 100%; width: 0%;
+      background: linear-gradient(90deg, rgba(0,210,255,0.15) 0%, rgba(0,210,255,0.7) 100%);
+      border-right: 2px solid #fff;
+    }
+    .waveform-progress-bar {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background-image: repeating-linear-gradient(90deg, #fff 0px, #fff 2px, transparent 2px, transparent 4px);
+    }
+
+    .search-input { width: 100%; padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: #fff; margin-bottom: 0; outline: none; }
     select.search-input option { background: var(--bg-card); color: #fff; }
 
-    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
-    th, td { padding: 12px 15px; border-bottom: 1px solid var(--border); }
+    /* ESTILO DE LA LEYENDA DE RESULTADOS */
+    .results-counter {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #38bdf8;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      padding: 0 12px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .table-container { width: 100%; overflow-x: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; table-layout: fixed; min-width: 900px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     th { background: #121216; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
     tr:hover { background: #1a1a20; }
+    tr.playing-row { background: #064e3b33 !important; }
+
+    .col-cb { width: 40px; text-align: center; }
+    .col-play { width: 50px; text-align: center; }
+    .col-fmt { width: 75px; }
+    .col-folder { width: 110px; }
+    .col-title { width: 28%; }
+    .col-artist { width: 20%; }
+    .col-album { width: 20%; }
+    .col-bpm { width: 60px; text-align: center; }
+    .col-key { width: 60px; text-align: center; }
+    .col-bits { width: 75px; text-align: center; }
+
     .badge-key { background: #1e293b; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
     .badge-fmt { background: #2e1065; color: #c084fc; padding: 3px 8px; border-radius: 4px; font-weight: bold; text-transform: uppercase; }
-    .btn-play { background: var(--accent); border: none; color: #fff; border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; justify-content: center; }
+    .btn-play { background: var(--accent); border: none; color: #000; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; margin: 0 auto; font-weight: bold; }
+    .btn-play:hover { background: var(--accent-hover); color: #fff; }
+
+    .track-cell-title { display: flex; align-items: center; gap: 10px; overflow: hidden; }
+    .track-thumb { width: 34px; height: 34px; border-radius: 4px; object-fit: cover; background: #1a1a20; flex-shrink: 0; border: 1px solid #2a2a32; }
 
     .panel { display: none; }
     .panel.active { display: block; }
@@ -63,8 +156,13 @@
 <body>
 
   <div class="sidebar">
-    <h2>NEXUS MUSIC</h2>
-    <div class="subtitle">ENGINE MANAGER</div>
+    <div class="brand-container">
+      <img src="images/logo.png" alt="Nexus Logo" class="brand-logo1" onerror="this.onerror=null; this.src='images/favicon.ico';">
+      <div class="brand-text">
+        <h2>NEXUS MUSIC</h2>
+        <div class="subtitle">ENGINE MANAGER</div>
+      </div>
+    </div>
     <div class="nav-item active" onclick="showTab('dashboard', event)">🏠 Dashboard / Home</div>
     <div class="nav-item" onclick="showTab('collection', event)">🎵 Play / Library</div>
     <div class="nav-item" onclick="showTab('playlists', event)">📂 Playlists & XML</div>
@@ -103,26 +201,27 @@
       </div>
       
       <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-        <input type="text" id="searchInput" class="search-input" style="margin-bottom:0;" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." oninput="onSearchInput(this.value)">
-        <select id="folderFilter" class="search-input" style="width: 220px; margin-bottom:0;" onchange="filterCollection()">
+        <input type="text" id="searchInput" class="search-input" placeholder="🔍 Search by Title, Artist, File Name, Album, Key or BPM..." oninput="onSearchInput(this.value)">
+        <select id="folderFilter" class="search-input" style="width: 220px;" onchange="filterCollection()">
           <option value="ALL">📁 All Folders</option>
         </select>
+        <div class="results-counter" id="resultsCounter">0 results found</div>
       </div>
 
-      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">
+      <div class="table-container">
         <table>
           <thead>
             <tr>
-              <th><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
-              <th>Play</th>
-              <th>Format</th>
-              <th>Folder</th>
-              <th>Title / File</th>
-              <th>Artist</th>
-              <th>Album</th>
-              <th>BPM</th>
-              <th>Key</th>
-              <th>Bits</th>
+              <th class="col-cb"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
+              <th class="col-play">Play</th>
+              <th class="col-fmt">Format</th>
+              <th class="col-folder">Folder</th>
+              <th class="col-title">Title / File</th>
+              <th class="col-artist">Artist</th>
+              <th class="col-album">Album</th>
+              <th class="col-bpm">BPM</th>
+              <th class="col-key">Key</th>
+              <th class="col-bits">Bits</th>
             </tr>
           </thead>
           <tbody id="collectionTableBody">
@@ -140,12 +239,32 @@
 
   </div>
 
-  <div class="audio-player-bar">
-    <div class="now-playing">
-      <div class="now-playing-title" id="player-title">Select a track</div>
-      <div class="now-playing-artist" id="player-artist">Nexus Music Player</div>
+  <div class="audio-player-bar" id="playerBar">
+    <div class="now-playing-container">
+      <img id="player-cover" src="/images/default-cover.png" class="now-playing-cover" onerror="this.src='/images/default-cover.png';" alt="Cover" />
+      <div class="now-playing-info">
+        <div class="now-playing-title" id="player-title">Select a track</div>
+        <div class="now-playing-artist" id="player-artist">Nexus Music Player</div>
+      </div>
     </div>
-    <audio id="globalAudioPlayer" controls src=""></audio>
+
+    <div class="player-controls">
+      <button class="btn-control" onclick="playPrevTrack()" title="Previous Track">⏮</button>
+      <button class="btn-control btn-control-main" id="btnPlayPause" onclick="togglePlayPause()" title="Play / Pause">▶</button>
+      <button class="btn-control" onclick="playNextTrack()" title="Next Track">⏭</button>
+    </div>
+
+    <div class="waveform-container">
+      <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
+      <div class="waveform-wrapper" id="waveformWrapper" onclick="seekAudio(event)">
+        <div class="waveform-bg"></div>
+        <div class="waveform-progress" id="waveformProgress">
+          <div class="waveform-progress-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <audio id="globalAudioPlayer" src=""></audio>
   </div>
 
   <script>
@@ -154,6 +273,14 @@
     let currentRenderedData = [];
     const globalSelectedTracks = new Map();
     let searchTimeout = null;
+    let currentPlayingIndex = -1;
+
+    const DEFAULT_COVER = '/images/default-cover.png';
+    const player = document.getElementById('globalAudioPlayer');
+    const playerBar = document.getElementById('playerBar');
+    const btnPlayPause = document.getElementById('btnPlayPause');
+    const waveformProgress = document.getElementById('waveformProgress');
+    const timeDisplay = document.getElementById('timeDisplay');
 
     function updateStats() {
       fetch('/api/stats')
@@ -167,7 +294,6 @@
 
     updateStats();
 
-    // Auto-update stats and collection every 10 seconds in the background without refreshing
     setInterval(() => {
       updateStats();
       const searchVal = document.getElementById('searchInput').value;
@@ -300,6 +426,14 @@
 
     function renderCollection(data) {
       currentRenderedData = data;
+      const count = data ? data.length : 0;
+      
+      // ACTUALIZAR LEYENDA DE RESULTADOS EN INGLÉS
+      const counterEl = document.getElementById('resultsCounter');
+      if (counterEl) {
+        counterEl.innerText = `${count} ${count === 1 ? 'result found' : 'results found'}`;
+      }
+
       const tbody = document.getElementById('collectionTableBody');
       if (!data || data.length === 0) {
         tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 20px;">No tracks found for the selected filter.</td></tr>`;
@@ -313,26 +447,33 @@
         const formatLabel = getAudioFormat(t);
         const folderLabel = extractFolderName(t);
         const coverUrl = `/api/cover?path=${encodeURIComponent(t.filePath || t.path)}`;
+        const isPlaying = idx === currentPlayingIndex;
+
+        // AJUSTE DE LECTURA MÚLTIPLE PARA BPM, KEY Y BITS/BITRATE
+        const displayBpm = t.bpm || t.BPM || t.tbpm || '--';
+        const displayKey = t.key || t.initialKey || t.Key || t.tkey || '--';
+        const rawBitrate = t.bitrate || t.bitRate || t.bit_rate;
+        const displayBits = rawBitrate 
+          ? rawBitrate + ' kbps' 
+          : (t.bits ? t.bits + ' bit' : 'N/A');
 
         return `
-          <tr>
-            <td><input type="checkbox" class="track-select" data-idx="${idx}" ${isChecked ? 'checked' : ''} onchange="handleTrackSelectChange(this, ${idx})"></td>
-            <td><button class="btn-play" onclick="playTrackByIdx(${idx})">▶</button></td>
-            <td><span class="badge-fmt">${escapeHtml(formatLabel)}</span></td>
-            <td><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(folderLabel)}</span></td>
-            <td>
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <img src="${coverUrl}" 
-                     onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'34\' height=\'34\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%238e8e9a\' stroke-width=\'2\'><rect x=\'3\' y=\'3\' width=\'18\' height=\'18\' rx=\'2\'/><circle cx=\'12\' cy=\'12\' r=\'4\'/></svg>';" 
-                     style="width: 34px; height: 34px; border-radius: 4px; object-fit: cover; background: #1a1a20; flex-shrink: 0;" />
-                <strong>${escapeHtml(t.title || t.filename || '')}</strong>
+          <tr class="${isPlaying ? 'playing-row' : ''}">
+            <td class="col-cb"><input type="checkbox" class="track-select" data-idx="${idx}" ${isChecked ? 'checked' : ''} onchange="handleTrackSelectChange(this, ${idx})"></td>
+            <td class="col-play"><button class="btn-play" onclick="playTrackByIdx(${idx})">${isPlaying && !player.paused ? '❚❚' : '▶'}</button></td>
+            <td class="col-fmt"><span class="badge-fmt">${escapeHtml(formatLabel)}</span></td>
+            <td class="col-folder"><span class="badge-key" style="background:#22222a; color:#a1a1aa;">${escapeHtml(folderLabel)}</span></td>
+            <td class="col-title">
+              <div class="track-cell-title">
+                <img src="${coverUrl}" class="track-thumb" onerror="this.onerror=null; this.src='${DEFAULT_COVER}';" />
+                <strong title="${escapeHtml(t.title || t.filename || '')}">${escapeHtml(t.title || t.filename || '')}</strong>
               </div>
             </td>
-            <td>${escapeHtml(t.artist || 'Unknown')}</td>
-            <td><span style="color: var(--text-muted);">${escapeHtml(t.album || 'Single / Unknown')}</span></td>
-            <td>${t.bpm || '--'}</td>
-            <td><span class="badge-key">${t.key || '--'}</span></td>
-            <td>${t.bitrate ? t.bitrate + ' kbps' : 'N/A'}</td>
+            <td class="col-artist" title="${escapeHtml(t.artist || 'Unknown')}">${escapeHtml(t.artist || 'Unknown')}</td>
+            <td class="col-album" title="${escapeHtml(t.album || 'Single / Unknown')}"><span style="color: var(--text-muted);">${escapeHtml(t.album || 'Single / Unknown')}</span></td>
+            <td class="col-bpm">${escapeHtml(displayBpm)}</td>
+            <td class="col-key"><span class="badge-key">${escapeHtml(displayKey)}</span></td>
+            <td class="col-bits">${escapeHtml(displayBits)}</td>
           </tr>
         `;
       }).join('');
@@ -409,23 +550,85 @@
     }
 
     function playTrackByIdx(idx) {
+      if (idx < 0 || idx >= currentRenderedData.length) return;
+      
       const track = currentRenderedData[idx];
       if (!track) return;
 
       const audioFilePath = track.filePath || track.path || track.location || track.file || '';
-
       if (!audioFilePath) {
         alert('File path not found for this track.');
         return;
       }
 
-      const player = document.getElementById('globalAudioPlayer');
+      currentPlayingIndex = idx;
+
+      playerBar.classList.add('visible');
+
       document.getElementById('player-title').innerText = track.title || track.filename || 'Playing track...';
       document.getElementById('player-artist').innerText = track.artist || 'Nexus Player';
+      
+      const coverUrl = `/api/cover?path=${encodeURIComponent(audioFilePath)}`;
+      document.getElementById('player-cover').src = coverUrl;
 
       const safePath = encodeURIComponent(audioFilePath);
       player.src = `/audio-stream?path=${safePath}`;
-      player.play().catch(err => console.error("Error playing audio:", err));
+      player.play()
+        .then(() => {
+          btnPlayPause.innerText = '❚❚';
+          renderCollection(currentRenderedData);
+        })
+        .catch(err => console.error("Error playing audio:", err));
+    }
+
+    function togglePlayPause() {
+      if (!player.src) return;
+      if (player.paused) {
+        player.play();
+        btnPlayPause.innerText = '❚❚';
+      } else {
+        player.pause();
+        btnPlayPause.innerText = '▶';
+      }
+      renderCollection(currentRenderedData);
+    }
+
+    function playNextTrack() {
+      if (currentPlayingIndex + 1 < currentRenderedData.length) {
+        playTrackByIdx(currentPlayingIndex + 1);
+      }
+    }
+
+    function playPrevTrack() {
+      if (currentPlayingIndex - 1 >= 0) {
+        playTrackByIdx(currentPlayingIndex - 1);
+      }
+    }
+
+    function formatTime(seconds) {
+      if (isNaN(seconds)) return "0:00";
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    }
+
+    player.addEventListener('timeupdate', () => {
+      if (!player.duration) return;
+      const pct = (player.currentTime / player.duration) * 100;
+      waveformProgress.style.width = `${pct}%`;
+      timeDisplay.innerText = `${formatTime(player.currentTime)} / ${formatTime(player.duration)}`;
+    });
+
+    player.addEventListener('ended', () => {
+      playNextTrack();
+    });
+
+    function seekAudio(e) {
+      if (!player.duration) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const pct = clickX / rect.width;
+      player.currentTime = pct * player.duration;
     }
 
     function createPlaylistFromSelection() {

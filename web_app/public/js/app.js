@@ -7,6 +7,7 @@ let collectionCache = [];
 // Escuchar inicio de la aplicación
 document.addEventListener('DOMContentLoaded', () => {
   loadCollection();
+  initGlobalAudioPlayer();
 });
 
 // ==========================================
@@ -26,7 +27,10 @@ async function loadCollection() {
 // Búsqueda y Filtrado en Tiempo Real
 // ==========================================
 function handleSearch() {
-  const query = document.getElementById('search-input').value.toLowerCase().trim();
+  const queryInput = document.getElementById('search-input');
+  if (!queryInput) return;
+  
+  const query = queryInput.value.toLowerCase().trim();
   if (!query) {
     renderTrackList(collectionCache);
     return;
@@ -47,6 +51,8 @@ function handleSearch() {
 // ==========================================
 function renderTrackList(tracks) {
   const container = document.getElementById('track-list-container');
+  if (!container) return;
+  
   container.innerHTML = '';
 
   if (!tracks || tracks.length === 0) {
@@ -122,6 +128,8 @@ function clearAllSelections() {
 // ==========================================
 async function submitPlaylist() {
   const nameInput = document.getElementById('playlist-name-input');
+  if (!nameInput) return;
+  
   const playlistName = nameInput.value.trim();
   const tracksArray = Array.from(selectedTracks.keys());
 
@@ -158,20 +166,36 @@ async function submitPlaylist() {
 }
 
 // ==========================================
-// Función Auxiliar para Streaming de Audio
+// Reproductor Global y Streaming de Audio Ultra-Rápido
 // ==========================================
+function initGlobalAudioPlayer() {
+  let player = document.getElementById('global-audio-player');
+  if (!player) {
+    player = document.createElement('audio');
+    player.id = 'global-audio-player';
+    player.controls = true;
+    player.style.cssText = 'position: fixed; bottom: 10px; right: 10px; z-index: 9999; background: #222; border-radius: 4px; padding: 4px;';
+    document.body.appendChild(player);
+  }
+}
+
 function playAudio(trackPath) {
   const streamUrl = `/audio-stream?path=${encodeURIComponent(trackPath)}`;
   let player = document.getElementById('global-audio-player');
 
   if (!player) {
-    player = document.createElement('audio');
-    player.id = 'global-audio-player';
-    player.controls = true;
-    player.style.cssText = 'position: fixed; bottom: 10px; right: 10px; z-index: 9999;';
-    document.body.appendChild(player);
+    initGlobalAudioPlayer();
+    player = document.getElementById('global-audio-player');
   }
 
+  // Detener la reproducción anterior e inyectar el nuevo flujo sin demoras
+  player.pause();
   player.src = streamUrl;
-  player.play().catch(e => console.error('Error reproducing track:', e));
+  player.load(); // Forzar reinicio de buffer en el navegador
+  
+  player.play().catch(e => {
+    if (e.name !== 'AbortError') {
+      console.error('Error reproducing track:', e);
+    }
+  });
 }
