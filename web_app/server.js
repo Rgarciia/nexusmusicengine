@@ -31,6 +31,27 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Helper interno para obtener las estadísticas actuales sin romper contratos
+function getCurrentStats() {
+  if (typeof dataManager.getStats === 'function') {
+    return dataManager.getStats();
+  }
+  let collection = [];
+  if (typeof dataManager.getCollectionData === 'function') {
+    collection = dataManager.getCollectionData();
+  } else if (typeof dataManager.getCollection === 'function') {
+    collection = dataManager.getCollection();
+  } else if (typeof dataManager.getAllTracks === 'function') {
+    collection = dataManager.getAllTracks();
+  } else if (typeof dataManager.getTracks === 'function') {
+    collection = dataManager.getTracks();
+  }
+  return {
+    totalTracks: Array.isArray(collection) ? collection.length : 0,
+    totalPlaylists: 0
+  };
+}
+
 // ==========================================
 // BACKGROUND WATCHDOG / AUTO-SYNC SYSTEM
 // ==========================================
@@ -41,22 +62,29 @@ if (fs.existsSync(MUSIC_ROOT_DIRECTORY)) {
     fs.watch(MUSIC_ROOT_DIRECTORY, { recursive: true }, (eventType, filename) => {
       // Ignorar cambios en la propia carpeta de playlists para evitar bucles infinitos
       if (filename && filename.includes('playlistnexusmusic')) return;
-      if (filename && !/\.(mp3|wav|flac|m4a|aac|ogg|aiff|aif)$/i.test(filename)) return;
 
-      // Anti-rebote (debounce) para esperar a que terminen de copiarse los archivos
+      // Anti-rebote (debounce): Dar 1.5 segundos a Windows para asegurar que termine de borrar/copiar
       clearTimeout(watchDebounceTimeout);
-      watchDebounceTimeout = setTimeout(() => {
-        console.log(`🔄 [AUTO-SYNC] Change detected (${eventType}: ${filename}). Reloading catalog...`);
+      watchDebounceTimeout = setTimeout(async () => {
+        console.log(`🔄 [AUTO-SYNC] Change detected (${eventType}: ${filename}). Syncing disk changes...`);
         
+        // Pausa adicional de seguridad para liberaciones de archivos en el sistema operativo
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Esperar formalmente a que el dataManager termine la re-indexación en RAM
         if (typeof dataManager.loadCollection === 'function') {
-          dataManager.loadCollection();
+          await dataManager.loadCollection();
         } else if (typeof dataManager.init === 'function') {
-          dataManager.init();
+          await dataManager.init();
         } else if (typeof dataManager.reload === 'function') {
-          dataManager.reload();
+          await dataManager.reload();
         }
 
-        io.emit('catalog-updated', { time: Date.now() });
+        const stats = getCurrentStats();
+
+        // Emite tanto catalog-updated como stats-updated para refrescar Dashboard y Búsquedas en vivo
+        io.emit('catalog-updated', { time: Date.now(), stats: stats });
+        io.emit('stats-updated', stats);
       }, 1500);
     });
     console.log(`👁️ [WATCHDOG] Active file watcher listening on ${MUSIC_ROOT_DIRECTORY}`);
@@ -70,11 +98,8 @@ if (fs.existsSync(MUSIC_ROOT_DIRECTORY)) {
 // ==========================================
 app.get('/api/stats', (req, res) => {
   try {
-    let stats = {};
-    if (typeof dataManager.getStats === 'function') {
-      stats = dataManager.getStats();
-    }
-    res.json(stats || { totalTracks: 0, totalPlaylists: 0 });
+    const stats = getCurrentStats();
+    res.json(stats);
   } catch (err) {
     console.error('Error fetching statistics:', err);
     res.json({ totalTracks: 0, totalPlaylists: 0 });
@@ -125,7 +150,6 @@ app.get('/api/search', (req, res) => {
       return res.json(results);
     }
 
-    // Fallback por si la función no estuviera disponible
     res.json([]);
   } catch (err) {
     console.error('[ERROR IN /api/search]:', err);
@@ -143,7 +167,6 @@ app.get('/api/cover', (req, res) => {
       let fullFilePath = path.normalize(decodeURIComponent(rawPath).trim());
       const trackDir = path.dirname(fullFilePath);
 
-      // Buscar imágenes de portada comunes en la carpeta de la canción
       const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg', 'Cover.jpg', 'Folder.jpg'];
       let foundCover = null;
 
@@ -160,7 +183,6 @@ app.get('/api/cover', (req, res) => {
       }
     }
 
-    // Fallback: Si no existe la carátula o no se especificó ruta, entrega la imagen por defecto
     if (fs.existsSync(DEFAULT_COVER_PATH)) {
       return res.sendFile(DEFAULT_COVER_PATH);
     }
@@ -175,7 +197,7 @@ app.get('/api/cover', (req, res) => {
 });
 
 // ==========================================
-// API: Secure Audio Streaming (HTTP Range 206 + High Performance)
+// API: Secure Audio Streaming (HTTP Range 206 + Auto-Release Stream)
 // ==========================================
 app.get('/audio-stream', (req, res) => {
   try {
@@ -198,18 +220,26 @@ app.get('/audio-stream', (req, res) => {
 
     const ext = path.extname(fullFilePath).toLowerCase();
 
+    // Evitar que Windows mantenga el archivo bloqueado indefinidamente
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+
     // TRANSCODIFICACIÓN EN TIEMPO REAL PARA ARCHIVOS .AIFF / .AIF
     if (ext === '.aiff' || ext === '.aif') {
       res.setHeader('Content-Type', 'audio/wav');
       
-      ffmpeg(fullFilePath)
+      const ffmpegCommand = ffmpeg(fullFilePath)
         .toFormat('wav')
         .on('error', (err) => {
           if (err.code !== 'ECONNRESET' && !res.headersSent) {
             console.error('[FFMPEG STREAM ERROR]:', err.message);
           }
-        })
-        .pipe(res, { end: true });
+        });
+
+      ffmpegCommand.pipe(res, { end: true });
+
+      req.on('close', () => {
+        try { ffmpegCommand.kill('SIGKILL'); } catch (e) {}
+      });
 
       return;
     }
@@ -244,16 +274,27 @@ app.get('/audio-stream', (req, res) => {
         'Content-Type': contentType,
       };
 
+      // CIERRE INMEDIATO DEL ARCHIVO
+      req.on('close', () => {
+        stream.destroy();
+      });
+
       res.writeHead(206, head);
       stream.pipe(res);
     } else {
+      const stream = fs.createReadStream(fullFilePath);
       const head = {
         'Content-Length': fileSize,
         'Content-Type': contentType,
         'Accept-Ranges': 'bytes'
       };
+
+      req.on('close', () => {
+        stream.destroy();
+      });
+
       res.writeHead(200, head);
-      fs.createReadStream(fullFilePath).pipe(res);
+      stream.pipe(res);
     }
 
   } catch (error) {
@@ -277,7 +318,6 @@ app.post('/api/playlists/create', (req, res) => {
       return res.status(400).json({ error: 'Invalid playlist name or empty tracks selection.' });
     }
 
-    // Process via dataManager if available
     let dataManagerResult = null;
     if (typeof dataManager.createPlaylist === 'function') {
       dataManagerResult = dataManager.createPlaylist(playlistName, selectedTracks);
@@ -291,22 +331,18 @@ app.post('/api/playlists/create', (req, res) => {
     selectedTracks.forEach(track => {
       let trackPath = typeof track === 'object' ? (track.path || track.filePath || track.url) : track;
       if (trackPath) {
-        // Convert relative paths to absolute based on D:\Music Library
         if (!path.isAbsolute(trackPath)) {
           trackPath = path.join(MUSIC_ROOT_DIRECTORY, trackPath);
         }
 
-        // Format exact Windows separators (D:\Music Library\...)
         const absolutePath = path.win32.normalize(trackPath);
         const fileNameWithoutExt = path.basename(absolutePath, path.extname(absolutePath));
 
-        // Extended M3U header for Rekordbox / Engine DJ compatibility
         m3uContent += `#EXTINF:-1,${fileNameWithoutExt}\n`;
         m3uContent += `${absolutePath}\n`;
       }
     });
 
-    // Write exclusively as .m3u8 with UTF-8 BOM
     fs.writeFileSync(filePathM3U8, '\ufeff' + m3uContent, 'utf8');
 
     console.log(`[PLAYLIST CREATED] "${safeFileName}.m3u8" (${selectedTracks.length} tracks) saved to ${TARGET_PLAYLISTS_DIR}`);
@@ -326,13 +362,26 @@ app.post('/api/playlists/create', (req, res) => {
 });
 
 // ==========================================
-// API: List Created Playlists (.m3u8)
+// API: List Created Playlists (.m3u8) with Track Counts
 // ==========================================
 app.get('/api/playlists', (req, res) => {
   try {
     if (fs.existsSync(TARGET_PLAYLISTS_DIR)) {
       const files = fs.readdirSync(TARGET_PLAYLISTS_DIR).filter(f => f.endsWith('.m3u8'));
-      return res.json(files.map(f => ({ name: f.replace(/\.m3u8$/, ''), file: f })));
+      const result = files.map(f => {
+        const filePath = path.join(TARGET_PLAYLISTS_DIR, f);
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const lines = content.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+        return {
+          id: f,
+          name: f.replace(/\.m3u8$/, ''),
+          filename: f,
+          file: f,
+          trackCount: lines.length,
+          tracks: lines
+        };
+      });
+      return res.json(result);
     }
     res.json([]);
   } catch (err) {
@@ -342,7 +391,63 @@ app.get('/api/playlists', (req, res) => {
 });
 
 // ==========================================
-// WebSockets: Real-time PowerShell Execution
+// API: Rename Existing Playlist
+// ==========================================
+app.put('/api/playlists/rename', (req, res) => {
+  try {
+    const { oldName, newName } = req.body;
+    if (!oldName || !newName) {
+      return res.status(400).json({ error: 'Invalid old or new playlist name.' });
+    }
+
+    const safeOldName = oldName.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+    const safeNewName = newName.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+
+    const oldPath = path.join(TARGET_PLAYLISTS_DIR, `${safeOldName}.m3u8`);
+    const newPath = path.join(TARGET_PLAYLISTS_DIR, `${safeNewName}.m3u8`);
+
+    if (!fs.existsSync(oldPath)) {
+      return res.status(404).json({ error: 'Source playlist file not found.' });
+    }
+
+    fs.renameSync(oldPath, newPath);
+    console.log(`[PLAYLIST RENAMED] "${safeOldName}.m3u8" -> "${safeNewName}.m3u8"`);
+
+    res.json({ success: true, message: `Playlist successfully renamed to "${safeNewName}".` });
+  } catch (err) {
+    console.error('Error renaming playlist:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// API: Delete Playlist (.m3u8)
+// ==========================================
+app.delete('/api/playlists/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    if (!filename) {
+      return res.status(400).json({ error: 'Filename parameter is required.' });
+    }
+
+    const filePath = path.join(TARGET_PLAYLISTS_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Playlist file not found.' });
+    }
+
+    fs.unlinkSync(filePath);
+    console.log(`[PLAYLIST DELETED] "${filename}" removed from ${TARGET_PLAYLISTS_DIR}`);
+
+    res.json({ success: true, message: `Playlist "${filename}" successfully deleted.` });
+  } catch (err) {
+    console.error('Error deleting playlist:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// WebSockets: Real-time PowerShell Execution & Auto-Sync Signals
 // ==========================================
 io.on('connection', (socket) => {
   socket.emit('log', { type: 'info', text: '[SYSTEM] Connection established with live console.' });
@@ -367,9 +472,21 @@ io.on('connection', (socket) => {
       socket.emit('log', { type: 'error', text: data.toString().trim() });
     });
 
-    ps.on('close', (code) => {
+    ps.on('close', async (code) => {
       if (code === 0) {
         socket.emit('log', { type: 'success', text: `[SUCCESS] ${script} completed successfully.` });
+        
+        if (typeof dataManager.loadCollection === 'function') {
+          await dataManager.loadCollection();
+        } else if (typeof dataManager.init === 'function') {
+          await dataManager.init();
+        } else if (typeof dataManager.reload === 'function') {
+          await dataManager.reload();
+        }
+
+        const stats = getCurrentStats();
+        io.emit('catalog-updated', { time: Date.now(), stats: stats });
+        io.emit('stats-updated', stats);
       } else {
         socket.emit('log', { type: 'error', text: `[ERROR] ${script} finished with exit code ${code}.` });
       }

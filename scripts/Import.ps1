@@ -26,6 +26,19 @@ $projectRoot = (Get-Item -LiteralPath $scriptRoot).Parent.FullName
 . (Join-Path -Path $scriptRoot -ChildPath "Playlist.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Notifications.ps1")
 
+# Función helper para reemplazar [System.IO.Path]::GetRelativePath
+# Garantiza compatibilidad universal con Windows PowerShell 5.1 y .NET Framework
+function Get-RelativePathCustom {
+    param (
+        [string]$BasePath,
+        [string]$TargetPath
+    )
+    $baseUri = New-Object System.Uri(($BasePath.TrimEnd('\') + '\'))
+    $targetUri = New-Object System.Uri($TargetPath)
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    return [System.Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', '\')
+}
+
 # Resolver ruta de configuración relativa al projectRoot
 $fullConfigPath = Join-Path -Path $projectRoot -ChildPath $ConfigPath
 

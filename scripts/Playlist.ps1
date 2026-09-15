@@ -3,6 +3,18 @@
     Módulo para la generación de archivos de playlist M3U8 para Rekordbox / Engine DJ.
 #>
 
+# Función helper para calcular rutas relativas compatibles con Windows PowerShell 5.1
+function Get-RelativePathCustom {
+    param (
+        [string]$BasePath,
+        [string]$TargetPath
+    )
+    $baseUri = New-Object System.Uri(($BasePath.TrimEnd('\') + '\'))
+    $targetUri = New-Object System.Uri($TargetPath)
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    return [System.Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', '\')
+}
+
 function New-BatchPlaylists {
     [CmdletBinding()]
     param (
@@ -57,8 +69,8 @@ function New-GlobalBatchPlaylist {
         $lines = @("#EXTM3U")
 
         foreach ($file in $allAudioFiles) {
-            # Calcular la ruta relativa respecto a la raíz del lote
-            $relativePath = [System.IO.Path]::GetRelativePath($TargetDirectory, $file.FullName)
+            # Calcular la ruta relativa respecto a la raíz del lote (Compatible con PowerShell 5.1)
+            $relativePath = Get-RelativePathCustom -BasePath $TargetDirectory -TargetPath $file.FullName
             # Reemplazar diagonales inversas por / para compatibilidad estándar M3U8
             $relativePath = $relativePath -replace '\\', '/'
             $lines += $relativePath
