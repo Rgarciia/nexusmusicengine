@@ -2,6 +2,7 @@
 .SYNOPSIS
     Script principal para la importación, descompresión, organización,
     renombrado y creación de playlist global para Rekordbox / Engine DJ.
+    (Versión optimizada: Sin proceso automático de Tagging)
 #>
 
 [CmdletBinding()]
@@ -13,7 +14,7 @@ param (
 $scriptRoot = $PSScriptRoot
 $projectRoot = (Get-Item -LiteralPath $scriptRoot).Parent.FullName
 
-# Cargar módulos auxiliares desde $scriptRoot
+# Cargar módulos auxiliares desde $scriptRoot (Tagging.ps1 se remueve deliberadamente)
 . (Join-Path -Path $scriptRoot -ChildPath "Utils.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Logger.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Validation.ps1")
@@ -21,13 +22,12 @@ $projectRoot = (Get-Item -LiteralPath $scriptRoot).Parent.FullName
 . (Join-Path -Path $scriptRoot -ChildPath "Recycle.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Audio.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Organize.ps1")
-. (Join-Path -Path $scriptRoot -ChildPath "Tagging.ps1")
+#. (Join-Path -Path $scriptRoot -ChildPath "Tagging.ps1") # DESACTIVADO: Evita consumo excesivo de memoria/logs
 . (Join-Path -Path $scriptRoot -ChildPath "Rename.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Playlist.ps1")
 . (Join-Path -Path $scriptRoot -ChildPath "Notifications.ps1")
 
 # Función helper para reemplazar [System.IO.Path]::GetRelativePath
-# Garantiza compatibilidad universal con Windows PowerShell 5.1 y .NET Framework
 function Get-RelativePathCustom {
     param (
         [string]$BasePath,
@@ -51,7 +51,7 @@ $config = Get-Content -LiteralPath $fullConfigPath -Raw -Encoding UTF8 | Convert
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-Write-Host "=== Iniciando MusicImporter v$($config.Version) (Procesamiento Avanzado) ===" -ForegroundColor Green
+Write-Host "=== Iniciando MusicImporter v$($config.Version) (Importación Ligera) ===" -ForegroundColor Green
 
 try {
     $sourcePath = $config.Paths.SourcePath
@@ -78,7 +78,7 @@ try {
         New-Item -Path $targetImportPath -ItemType Directory -Force | Out-Null
     }
 
-    # 2. Configurar la carpeta de LOGS DIRECTAMENTE en la raíz del lote creado
+    # 2. Configurar la carpeta de LOGS en la raíz del lote creado
     $logsPath = $targetImportPath
 
     Write-ImporterLog -Message "Configuración v$($config.Version) cargada." -Level "INFO" -LogsBasePath $logsPath
@@ -147,21 +147,11 @@ try {
         Write-ImporterLog -Message "Archivos sueltos procesados e ingresados a '_LooseTracks': $($looseAudioFiles.Count)" -Level "INFO" -LogsBasePath $logsPath
     }
 
-    # 6. Estandarización, Inspección de Metadatos y Renombrado
-    Write-ImporterLog -Message "Iniciando estandarización de nombres e inspección de metadatos..." -Level "INFO" -LogsBasePath $logsPath
+    # 6. Estandarización y Renombrado (Sin Tagging)
+    Write-ImporterLog -Message "Iniciando estandarización de nombres..." -Level "INFO" -LogsBasePath $logsPath
     
     if (Get-Command -Name "Invoke-BatchRename" -ErrorAction SilentlyContinue) {
         Invoke-BatchRename -TargetDirectory $targetImportPath -SupportedExtensions $config.Audio.SupportedExtensions -LogsBasePath $logsPath
-    }
-
-    # Inspección técnica (BPM, Key y Bitrate de MP3)
-    $allAudios = Get-ChildItem -LiteralPath $targetImportPath -File -Recurse | Where-Object {
-        $config.Audio.SupportedExtensions -contains $_.Extension.ToLower()
-    }
-    foreach ($track in $allAudios) {
-        if (Get-Command -Name "Clean-AudioTags" -ErrorAction SilentlyContinue) {
-            Clean-AudioTags -FilePath $track.FullName -LogsBasePath $logsPath
-        }
     }
 
     # 7. Generación ÚNICAMENTE de la Playlist GLOBAL en la Raíz (.m3u8)
@@ -190,7 +180,7 @@ try {
     
     Write-ImporterLog -Message "=== $successMessage ===" -Level "INFO" -LogsBasePath $logsPath
 
-    # 9. Enviar Notificación de Escritorio al Finalizar
+    # 9. Notificación de Escritorio
     if (Get-Command -Name "Send-ToastNotification" -ErrorAction SilentlyContinue) {
         Send-ToastNotification -Title "MusicImporter" -Message $successMessage
     }

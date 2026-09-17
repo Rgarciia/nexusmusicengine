@@ -15,14 +15,14 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
-// Main root music library directory
-const MUSIC_ROOT_DIRECTORY = 'D:\\Music Library';
+// Registro global para liberación estricta de File Handles y kill de streams
+const activeAudioStreams = new Map();
 
-// Centralized target directory to store backup playlists and direct Rekordbox reads
+// Rutas principales
+const MUSIC_ROOT_DIRECTORY = 'D:\\Music Library';
 const TARGET_PLAYLISTS_DIR = path.join(MUSIC_ROOT_DIRECTORY, 'playlistnexusmusic');
 const DEFAULT_COVER_PATH = path.join(__dirname, 'public', 'images', 'default-cover.png');
 
-// Ensure physical existence of target playlists directory in D:\Music Library
 if (!fs.existsSync(TARGET_PLAYLISTS_DIR)) {
   fs.mkdirSync(TARGET_PLAYLISTS_DIR, { recursive: true });
 }
@@ -31,180 +31,111 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper interno para obtener las estadísticas actuales sin romper contratos
+// Helpers de tiempo y stats
+function parseTimeToSeconds(timeVal) {
+  if (typeof timeVal === 'number' && !isNaN(timeVal)) return timeVal;
+  if (!timeVal || typeof timeVal !== 'string') return 0;
+  const parts = timeVal.trim().split(':').map(Number);
+  if (parts.some(isNaN)) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 1) return parts[0];
+  return 0;
+}
+
 function getCurrentStats() {
-  if (typeof dataManager.getStats === 'function') {
-    return dataManager.getStats();
-  }
-  let collection = [];
-  if (typeof dataManager.getCollectionData === 'function') {
-    collection = dataManager.getCollectionData();
-  } else if (typeof dataManager.getCollection === 'function') {
-    collection = dataManager.getCollection();
-  } else if (typeof dataManager.getAllTracks === 'function') {
-    collection = dataManager.getAllTracks();
-  } else if (typeof dataManager.getTracks === 'function') {
-    collection = dataManager.getTracks();
-  }
+  let collection = getInternalCollection();
   return {
     totalTracks: Array.isArray(collection) ? collection.length : 0,
-    totalPlaylists: 0
+    totalPlaylists: fs.existsSync(TARGET_PLAYLISTS_DIR) ? fs.readdirSync(TARGET_PLAYLISTS_DIR).filter(f => f.endsWith('.m3u8')).length : 0
   };
 }
 
+function getInternalCollection() {
+  if (typeof dataManager.getCollectionData === 'function') return dataManager.getCollectionData();
+  if (typeof dataManager.getCollection === 'function') return dataManager.getCollection();
+  if (typeof dataManager.getAllTracks === 'function') return dataManager.getAllTracks();
+  if (typeof dataManager.getTracks === 'function') return dataManager.getTracks();
+  return [];
+}
+
+// Helper para resolver la ruta absoluta de una playlist de manera segura (admite puntos internos en el nombre)
+function resolvePlaylistPath(filename) {
+  let cleanName = String(filename || '').trim();
+  if (!cleanName.toLowerCase().endsWith('.m3u8')) {
+    cleanName += '.m3u8';
+  }
+  return path.join(TARGET_PLAYLISTS_DIR, path.basename(cleanName));
+}
+
 // ==========================================
-// BACKGROUND WATCHDOG / AUTO-SYNC SYSTEM
+// WATCHDOG (Solo Sincronización Silenciosa)
 // ==========================================
 let watchDebounceTimeout = null;
 
 if (fs.existsSync(MUSIC_ROOT_DIRECTORY)) {
   try {
     fs.watch(MUSIC_ROOT_DIRECTORY, { recursive: true }, (eventType, filename) => {
-      // Ignorar cambios en la propia carpeta de playlists para evitar bucles infinitos
       if (filename && filename.includes('playlistnexusmusic')) return;
 
-      // Anti-rebote (debounce): Dar 1.5 segundos a Windows para asegurar que termine de borrar/copiar
       clearTimeout(watchDebounceTimeout);
       watchDebounceTimeout = setTimeout(async () => {
-        console.log(`🔄 [AUTO-SYNC] Change detected (${eventType}: ${filename}). Syncing disk changes...`);
-        
-        // Pausa adicional de seguridad para liberaciones de archivos en el sistema operativo
-        await new Promise(resolve => setTimeout(resolve, 500));
+        console.log(`🔄 [AUTO-SYNC] Cambio detectado (${eventType}: ${filename}). Recargando catálogo...`);
 
-        // Esperar formalmente a que el dataManager termine la re-indexación en RAM
         if (typeof dataManager.loadCollection === 'function') {
           await dataManager.loadCollection();
         } else if (typeof dataManager.init === 'function') {
           await dataManager.init();
-        } else if (typeof dataManager.reload === 'function') {
-          await dataManager.reload();
         }
 
         const stats = getCurrentStats();
-
-        // Emite tanto catalog-updated como stats-updated para refrescar Dashboard y Búsquedas en vivo
         io.emit('catalog-updated', { time: Date.now(), stats: stats });
         io.emit('stats-updated', stats);
       }, 1500);
     });
-    console.log(`👁️ [WATCHDOG] Active file watcher listening on ${MUSIC_ROOT_DIRECTORY}`);
+    console.log(`👁️ [WATCHDOG] Monitoreo pasivo activo en ${MUSIC_ROOT_DIRECTORY}`);
   } catch (err) {
-    console.warn(`[WATCHDOG WARN] Could not initialize fs.watch:`, err.message);
+    console.warn(`[WATCHDOG WARN] No se pudo inicializar fs.watch:`, err.message);
   }
 }
 
-// ==========================================
-// API: Main Statistics
-// ==========================================
-app.get('/api/stats', (req, res) => {
-  try {
-    const stats = getCurrentStats();
-    res.json(stats);
-  } catch (err) {
-    console.error('Error fetching statistics:', err);
-    res.json({ totalTracks: 0, totalPlaylists: 0 });
-  }
-});
+// API Routes
+app.get('/api/stats', (req, res) => res.json(getCurrentStats()));
 
-// ==========================================
-// API: Full Collection Retrieval
-// ==========================================
-app.get('/api/collection', (req, res) => {
-  try {
-    let collection = [];
+app.get('/api/collection', (req, res) => res.json(getInternalCollection()));
 
-    if (typeof dataManager.getCollectionData === 'function') {
-      collection = dataManager.getCollectionData();
-    } else if (typeof dataManager.getCollection === 'function') {
-      collection = dataManager.getCollection();
-    } else if (typeof dataManager.getAllTracks === 'function') {
-      collection = dataManager.getAllTracks();
-    } else if (typeof dataManager.getTracks === 'function') {
-      collection = dataManager.getTracks();
-    }
-
-    const count = Array.isArray(collection) ? collection.length : 0;
-    console.log(`[DEBUG] /api/collection requested. Tracks loaded: ${count}`);
-
-    if (Array.isArray(collection)) {
-      res.json(collection);
-    } else {
-      console.warn('[WARN] dataManager method did not return a valid Array.');
-      res.json([]);
-    }
-  } catch (err) {
-    console.error('[ERROR IN GETCOLLECTIONDATA]:', err);
-    res.json([]);
-  }
-});
-
-// ==========================================
-// API: Search Tracks (Windows Explorer Style)
-// ==========================================
 app.get('/api/search', (req, res) => {
-  try {
-    const query = req.query.q || req.query.query || '';
-
-    if (typeof dataManager.searchTracks === 'function') {
-      const results = dataManager.searchTracks(query);
-      return res.json(results);
-    }
-
-    res.json([]);
-  } catch (err) {
-    console.error('[ERROR IN /api/search]:', err);
-    res.json([]);
+  const query = req.query.q || req.query.query || '';
+  if (typeof dataManager.searchTracks === 'function') {
+    return res.json(dataManager.searchTracks(query));
   }
+  res.json([]);
 });
 
-// ==========================================
-// API: Album Cover / Artwork Stream + Default Fallback
-// ==========================================
 app.get('/api/cover', (req, res) => {
   try {
     const rawPath = req.query.path;
     if (rawPath) {
       let fullFilePath = path.normalize(decodeURIComponent(rawPath).trim());
       const trackDir = path.dirname(fullFilePath);
-
-      const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg', 'Cover.jpg', 'Folder.jpg'];
-      let foundCover = null;
-
+      const imageNames = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'artwork.jpg', 'album.jpg'];
       for (const imgName of imageNames) {
         const imgPath = path.join(trackDir, imgName);
-        if (fs.existsSync(imgPath)) {
-          foundCover = imgPath;
-          break;
-        }
-      }
-
-      if (foundCover) {
-        return res.sendFile(foundCover);
+        if (fs.existsSync(imgPath)) return res.sendFile(imgPath);
       }
     }
-
-    if (fs.existsSync(DEFAULT_COVER_PATH)) {
-      return res.sendFile(DEFAULT_COVER_PATH);
-    }
-
+    if (fs.existsSync(DEFAULT_COVER_PATH)) return res.sendFile(DEFAULT_COVER_PATH);
     res.status(404).send('No cover found');
   } catch (err) {
-    if (fs.existsSync(DEFAULT_COVER_PATH)) {
-      return res.sendFile(DEFAULT_COVER_PATH);
-    }
     res.status(500).send('Error retrieving cover');
   }
 });
 
-// ==========================================
-// API: Secure Audio Streaming (HTTP Range 206 + Auto-Release Stream)
-// ==========================================
+// STREAMING CON CONTROL Y CERRADO DE HANDLES
 app.get('/audio-stream', (req, res) => {
   try {
     const rawPath = req.query.path;
-    if (!rawPath) {
-      return res.status(400).send('File path parameter is required.');
-    }
+    if (!rawPath) return res.status(400).send('Ruta de archivo requerida.');
 
     let cleanPath = decodeURIComponent(rawPath).trim();
     let fullFilePath = path.normalize(cleanPath);
@@ -213,254 +144,344 @@ app.get('/audio-stream', (req, res) => {
       fullFilePath = path.join(MUSIC_ROOT_DIRECTORY, cleanPath);
     }
 
-    if (!fs.existsSync(fullFilePath)) {
-      console.error(`[AUDIO STREAM 404] Audio file not found on disk: ${fullFilePath}`);
-      return res.status(404).send('Audio file does not exist on disk.');
-    }
+    if (!fs.existsSync(fullFilePath)) return res.status(404).send('Archivo de audio no encontrado.');
 
+    const stat = fs.statSync(fullFilePath);
+    const fileSize = stat.size;
     const ext = path.extname(fullFilePath).toLowerCase();
+    const range = req.headers.range;
 
-    // Evitar que Windows mantenga el archivo bloqueado indefinidamente
+    const streamId = `${req.ip}-${Date.now()}`;
+
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Accept-Ranges', 'bytes');
 
-    // TRANSCODIFICACIÓN EN TIEMPO REAL PARA ARCHIVOS .AIFF / .AIF
+    // Manejo para AIFF con FFmpeg
     if (ext === '.aiff' || ext === '.aif') {
       res.setHeader('Content-Type', 'audio/wav');
       
-      const ffmpegCommand = ffmpeg(fullFilePath)
-        .toFormat('wav')
-        .on('error', (err) => {
-          if (err.code !== 'ECONNRESET' && !res.headersSent) {
-            console.error('[FFMPEG STREAM ERROR]:', err.message);
-          }
-        });
+      const ffmpegCommand = ffmpeg(fullFilePath).toFormat('wav');
+      activeAudioStreams.set(streamId, ffmpegCommand);
 
-      ffmpegCommand.pipe(res, { end: true });
-
-      req.on('close', () => {
-        try { ffmpegCommand.kill('SIGKILL'); } catch (e) {}
+      ffmpegCommand.on('error', (err) => {
+        if (err.message && err.message.includes('SIGKILL')) return;
+        if (!res.headersSent) {
+          try { res.status(500).send('Error en la transcodificación.'); } catch (e) {}
+        }
       });
 
+      const cleanupFFmpeg = () => {
+        if (activeAudioStreams.has(streamId)) {
+          try {
+            const cmd = activeAudioStreams.get(streamId);
+            if (cmd && typeof cmd.kill === 'function') cmd.kill('SIGKILL');
+          } catch (e) {}
+          activeAudioStreams.delete(streamId);
+        }
+      };
+
+      req.on('close', cleanupFFmpeg);
+      req.on('end', cleanupFFmpeg);
+      res.on('finish', cleanupFFmpeg);
+
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const startByte = parseInt(parts[0], 10);
+        res.writeHead(206, {
+          'Content-Range': `bytes ${startByte}-${fileSize - 1}/${fileSize}`,
+          'Content-Type': 'audio/wav',
+        });
+      }
+
+      ffmpegCommand.pipe(res, { end: true });
       return;
     }
 
-    // STREAMING POR RANGOS HTTP (206 PARTIAL CONTENT)
-    const stat = fs.statSync(fullFilePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    const mimeTypes = {
-      '.mp3': 'audio/mpeg',
-      '.wav': 'audio/wav',
-      '.flac': 'audio/flac',
-      '.m4a': 'audio/mp4',
-      '.aac': 'audio/aac',
-      '.ogg': 'audio/ogg'
-    };
+    const mimeTypes = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac', '.m4a': 'audio/mp4' };
     const contentType = mimeTypes[ext] || 'audio/mpeg';
 
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
       const chunksize = (end - start) + 1;
-      const stream = fs.createReadStream(fullFilePath, { start, end });
       
-      const head = {
+      const stream = fs.createReadStream(fullFilePath, { start, end });
+      activeAudioStreams.set(streamId, stream);
+
+      const cleanupStream = () => {
+        if (activeAudioStreams.has(streamId)) {
+          try {
+            const s = activeAudioStreams.get(streamId);
+            if (s && typeof s.destroy === 'function') s.destroy();
+          } catch (e) {}
+          activeAudioStreams.delete(streamId);
+        }
+      };
+
+      req.on('close', cleanupStream);
+      req.on('end', cleanupStream);
+      res.on('finish', cleanupStream);
+
+      res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunksize,
         'Content-Type': contentType,
-      };
-
-      // CIERRE INMEDIATO DEL ARCHIVO
-      req.on('close', () => {
-        stream.destroy();
       });
-
-      res.writeHead(206, head);
       stream.pipe(res);
     } else {
+      res.writeHead(200, { 'Content-Length': fileSize, 'Content-Type': contentType });
       const stream = fs.createReadStream(fullFilePath);
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': contentType,
-        'Accept-Ranges': 'bytes'
+      activeAudioStreams.set(streamId, stream);
+
+      const cleanupStream = () => {
+        if (activeAudioStreams.has(streamId)) {
+          try {
+            const s = activeAudioStreams.get(streamId);
+            if (s && typeof s.destroy === 'function') s.destroy();
+          } catch (e) {}
+          activeAudioStreams.delete(streamId);
+        }
       };
 
-      req.on('close', () => {
-        stream.destroy();
-      });
+      req.on('close', cleanupStream);
+      req.on('end', cleanupStream);
+      res.on('finish', cleanupStream);
 
-      res.writeHead(200, head);
       stream.pipe(res);
     }
-
   } catch (error) {
-    console.error('Internal server error while processing audio stream:', error);
-    if (!res.headersSent) {
-      res.status(500).send('Internal audio streaming server error.');
-    }
+    if (!res.headersSent) res.status(500).send('Error de streaming de audio.');
   }
 });
 
 // ==========================================
-// API: Create & Save Playlist in D:\Music Library\playlistnexusmusic (.m3u8)
+// PLAYLISTS API (ROBUSTO Y CON SOPORTE COMPLETO DE RENOMBRADO)
 // ==========================================
 app.post('/api/playlists/create', (req, res) => {
   try {
     const { name, tracks } = req.body;
-    const playlistName = name || req.body.playlistName;
-    const selectedTracks = tracks || req.body.selectedTracks;
-
-    if (!playlistName || !selectedTracks || !Array.isArray(selectedTracks) || selectedTracks.length === 0) {
-      return res.status(400).json({ error: 'Invalid playlist name or empty tracks selection.' });
+    if (!name || !tracks || !Array.isArray(tracks) || tracks.length === 0) {
+      return res.status(400).json({ error: 'Nombre o canciones inválidas.' });
     }
 
-    let dataManagerResult = null;
-    if (typeof dataManager.createPlaylist === 'function') {
-      dataManagerResult = dataManager.createPlaylist(playlistName, selectedTracks);
-    }
-
-    const safeFileName = playlistName.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-    const filePathM3U8 = path.join(TARGET_PLAYLISTS_DIR, `${safeFileName}.m3u8`);
+    const safeFileName = name.replace(/[^a-zA-Z0-9_\-\s\.]/g, '').trim();
+    const filePathM3U8 = resolvePlaylistPath(safeFileName);
 
     let m3uContent = '#EXTM3U\n';
-
-    selectedTracks.forEach(track => {
-      let trackPath = typeof track === 'object' ? (track.path || track.filePath || track.url) : track;
+    tracks.forEach(track => {
+      let trackPath = typeof track === 'object' ? (track.filePath || track.path) : track;
       if (trackPath) {
-        if (!path.isAbsolute(trackPath)) {
-          trackPath = path.join(MUSIC_ROOT_DIRECTORY, trackPath);
-        }
-
         const absolutePath = path.win32.normalize(trackPath);
-        const fileNameWithoutExt = path.basename(absolutePath, path.extname(absolutePath));
-
-        m3uContent += `#EXTINF:-1,${fileNameWithoutExt}\n`;
-        m3uContent += `${absolutePath}\n`;
+        m3uContent += `#EXTINF:-1,${path.basename(absolutePath)}\n${absolutePath}\n`;
       }
     });
 
     fs.writeFileSync(filePathM3U8, '\ufeff' + m3uContent, 'utf8');
-
-    console.log(`[PLAYLIST CREATED] "${safeFileName}.m3u8" (${selectedTracks.length} tracks) saved to ${TARGET_PLAYLISTS_DIR}`);
-
-    res.json({ 
-      success: true, 
-      count: selectedTracks.length,
-      message: `Playlist "${safeFileName}" created with ${selectedTracks.length} track(s) in D:\\Music Library\\playlistnexusmusic`,
-      folder: TARGET_PLAYLISTS_DIR,
-      playlist: dataManagerResult,
-      file: `${safeFileName}.m3u8`
-    });
+    res.json({ success: true, count: tracks.length, file: path.basename(filePathM3U8) });
   } catch (err) {
-    console.error('Error creating playlist:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==========================================
-// API: List Created Playlists (.m3u8) with Track Counts
-// ==========================================
 app.get('/api/playlists', (req, res) => {
   try {
     if (fs.existsSync(TARGET_PLAYLISTS_DIR)) {
-      const files = fs.readdirSync(TARGET_PLAYLISTS_DIR).filter(f => f.endsWith('.m3u8'));
+      const files = fs.readdirSync(TARGET_PLAYLISTS_DIR).filter(f => f.toLowerCase().endsWith('.m3u8'));
       const result = files.map(f => {
-        const filePath = path.join(TARGET_PLAYLISTS_DIR, f);
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
-        return {
-          id: f,
-          name: f.replace(/\.m3u8$/, ''),
-          filename: f,
-          file: f,
-          trackCount: lines.length,
-          tracks: lines
-        };
+        const fullPath = path.join(TARGET_PLAYLISTS_DIR, f);
+        // Quitar BOM de UTF-8 al leer el archivo
+        const content = fs.readFileSync(fullPath, 'utf-8').replace(/^\uFEFF/, '');
+        const lines = content.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+        return { filename: f, name: f.replace(/\.m3u8$/i, ''), trackCount: lines.length };
       });
       return res.json(result);
     }
     res.json([]);
   } catch (err) {
-    console.error('Error reading playlists directory:', err);
     res.json([]);
   }
 });
 
-// ==========================================
-// API: Rename Existing Playlist
-// ==========================================
-app.put('/api/playlists/rename', (req, res) => {
+app.get('/api/playlists/details', (req, res) => {
   try {
-    const { oldName, newName } = req.body;
-    if (!oldName || !newName) {
-      return res.status(400).json({ error: 'Invalid old or new playlist name.' });
-    }
+    const filename = req.query.filename;
+    if (!filename) return res.status(400).json({ error: 'Filename requerido' });
 
-    const safeOldName = oldName.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-    const safeNewName = newName.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-
-    const oldPath = path.join(TARGET_PLAYLISTS_DIR, `${safeOldName}.m3u8`);
-    const newPath = path.join(TARGET_PLAYLISTS_DIR, `${safeNewName}.m3u8`);
-
-    if (!fs.existsSync(oldPath)) {
-      return res.status(404).json({ error: 'Source playlist file not found.' });
-    }
-
-    fs.renameSync(oldPath, newPath);
-    console.log(`[PLAYLIST RENAMED] "${safeOldName}.m3u8" -> "${safeNewName}.m3u8"`);
-
-    res.json({ success: true, message: `Playlist successfully renamed to "${safeNewName}".` });
-  } catch (err) {
-    console.error('Error renaming playlist:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==========================================
-// API: Delete Playlist (.m3u8)
-// ==========================================
-app.delete('/api/playlists/:filename', (req, res) => {
-  try {
-    const filename = req.params.filename;
-    if (!filename) {
-      return res.status(400).json({ error: 'Filename parameter is required.' });
-    }
-
-    const filePath = path.join(TARGET_PLAYLISTS_DIR, filename);
+    const filePath = resolvePlaylistPath(filename);
 
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Playlist file not found.' });
+      return res.status(404).json({ error: 'Playlist no encontrada' });
     }
 
-    fs.unlinkSync(filePath);
-    console.log(`[PLAYLIST DELETED] "${filename}" removed from ${TARGET_PLAYLISTS_DIR}`);
+    // Quitar Byte Order Mark (BOM) para evitar caracteres invisibles al inicio
+    const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+    const lines = content.split(/\r?\n/);
+    
+    const collection = getInternalCollection();
+    const tracks = [];
 
-    res.json({ success: true, message: `Playlist "${filename}" successfully deleted.` });
+    lines.forEach(line => {
+      const cleanLine = line.trim();
+      if (!cleanLine || cleanLine.startsWith('#')) return;
+
+      const normalizedLine = path.win32.normalize(cleanLine);
+      
+      // Buscar coincidencia en el catálogo
+      const matched = collection.find(t => {
+        const p = typeof t === 'object' ? (t.path || t.filePath) : t;
+        return p && path.win32.normalize(p).toLowerCase() === normalizedLine.toLowerCase();
+      });
+
+      if (matched) {
+        tracks.push(matched);
+      } else {
+        tracks.push({
+          path: cleanLine,
+          filePath: cleanLine,
+          title: path.basename(cleanLine),
+          name: path.basename(cleanLine),
+          missing: true
+        });
+      }
+    });
+
+    return res.json({
+      filename: path.basename(filePath),
+      name: path.basename(filePath).replace(/\.m3u8$/i, ''),
+      tracks: tracks
+    });
   } catch (err) {
-    console.error('Error deleting playlist:', err);
+    console.error('Error al obtener detalles de la playlist:', err);
+    res.status(500).json({ error: 'Error al procesar el archivo M3U8' });
+  }
+});
+
+app.put('/api/playlists/update', (req, res) => {
+  try {
+    const { filename, tracks } = req.body;
+    if (!filename || !Array.isArray(tracks)) {
+      return res.status(400).json({ error: 'Datos de playlist inválidos.' });
+    }
+
+    const filePathM3U8 = resolvePlaylistPath(filename);
+
+    let m3uContent = '#EXTM3U\n';
+    tracks.forEach(trackPath => {
+      if (trackPath) {
+        const absolutePath = path.win32.normalize(trackPath);
+        m3uContent += `#EXTINF:-1,${path.basename(absolutePath)}\n${absolutePath}\n`;
+      }
+    });
+
+    fs.writeFileSync(filePathM3U8, '\ufeff' + m3uContent, 'utf8');
+    res.json({ success: true, count: tracks.length, filename: path.basename(filePathM3U8) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manejador flexible de renombrado compatible con cualquier payload del frontend
+const handleRenamePlaylist = (req, res) => {
+  try {
+    const oldFilename = req.body.oldFilename || req.body.filename || req.body.oldName || req.body.playlist;
+    const newName = req.body.newName || req.body.name || req.body.newFilename;
+
+    console.log(`[RENAME LOG] Solicitud recibida (${req.method}): oldFilename="${oldFilename}", newName="${newName}"`);
+
+    if (!oldFilename || !newName) {
+      return res.status(400).json({ error: 'Nombre antiguo y nuevo requeridos.' });
+    }
+
+    const oldPath = resolvePlaylistPath(oldFilename);
+    const sanitizedNewName = newName.replace(/[^a-zA-Z0-9_\-\s\.]/g, '').trim();
+
+    if (!sanitizedNewName) {
+      return res.status(400).json({ error: 'El nuevo nombre contiene caracteres no válidos.' });
+    }
+
+    const newPath = resolvePlaylistPath(sanitizedNewName);
+
+    console.log(`[RENAME LOG] Ruta origen: ${oldPath}`);
+    console.log(`[RENAME LOG] Ruta destino: ${newPath}`);
+
+    if (!fs.existsSync(oldPath)) {
+      return res.status(404).json({ error: 'La playlist original no fue encontrada en disco.' });
+    }
+
+    // Manejo especial para Windows si el cambio es solo en mayúsculas/minúsculas
+    if (oldPath.toLowerCase() === newPath.toLowerCase() && oldPath !== newPath) {
+      const tempPath = oldPath + '.tmp_' + Date.now();
+      fs.renameSync(oldPath, tempPath);
+      fs.renameSync(tempPath, newPath);
+    } else if (oldPath !== newPath) {
+      if (fs.existsSync(newPath)) {
+        return res.status(400).json({ error: 'Ya existe una playlist con ese mismo nombre.' });
+      }
+
+      try {
+        fs.renameSync(oldPath, newPath);
+      } catch (renameErr) {
+        console.warn(`[RENAME WARN] fs.renameSync falló (${renameErr.message}). Intentando copia manual...`);
+        fs.copyFileSync(oldPath, newPath);
+        fs.unlinkSync(oldPath);
+      }
+    }
+
+    const finalNewName = path.basename(newPath).replace(/\.m3u8$/i, '');
+    console.log(`[RENAME SUCCESS] Playlist renombrada con éxito a "${finalNewName}"`);
+
+    // Notificar cambios a la interfaz vía WebSockets
+    const stats = getCurrentStats();
+    io.emit('catalog-updated', { time: Date.now(), stats });
+    io.emit('stats-updated', stats);
+
+    res.json({ 
+      success: true, 
+      oldFilename: path.basename(oldPath), 
+      newFilename: path.basename(newPath),
+      newName: finalNewName,
+      name: finalNewName
+    });
+  } catch (err) {
+    console.error('[RENAME ERROR] Error al renombrar playlist:', err);
+    res.status(500).json({ error: `No se pudo renombrar el archivo en el disco: ${err.message}` });
+  }
+};
+
+// Rutas habilitadas tanto para POST como para PUT para compatibilidad con el cliente
+app.post('/api/playlists/rename', handleRenamePlaylist);
+app.put('/api/playlists/rename', handleRenamePlaylist);
+
+app.delete('/api/playlists/:filename', (req, res) => {
+  try {
+    const filePath = resolvePlaylistPath(req.params.filename);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ==========================================
-// WebSockets: Real-time PowerShell Execution & Auto-Sync Signals
+// WEBSOCKETS & SCRIPT EXECUTION
 // ==========================================
 io.on('connection', (socket) => {
-  socket.emit('log', { type: 'info', text: '[SYSTEM] Connection established with live console.' });
+  socket.emit('log', { type: 'info', text: '[SYSTEM] Conexión establecida con consola en vivo.' });
 
   socket.on('run-script', ({ script }) => {
-    const scriptPath = path.resolve(__dirname, '../scripts', script);
+    let scriptPath = path.resolve(__dirname, '../scripts', script);
+    if (!fs.existsSync(scriptPath)) {
+      scriptPath = path.resolve(__dirname, 'scripts', script);
+    }
     
     if (!fs.existsSync(scriptPath)) {
-      socket.emit('log', { type: 'error', text: `[ERROR] The script ${script} was not found in /scripts.` });
+      socket.emit('log', { type: 'error', text: `[ERROR] No se encontró el script "${script}" en el servidor.` });
       return;
     }
 
-    socket.emit('log', { type: 'warning', text: `[EXEC] Executing ${script}...` });
+    socket.emit('log', { type: 'warning', text: `[EXEC] Ejecutando ${script}...` });
 
     const ps = spawn('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
 
@@ -474,39 +495,18 @@ io.on('connection', (socket) => {
 
     ps.on('close', async (code) => {
       if (code === 0) {
-        socket.emit('log', { type: 'success', text: `[SUCCESS] ${script} completed successfully.` });
+        socket.emit('log', { type: 'success', text: `[ÉXITO] ${script} finalizado correctamente.` });
         
-        if (typeof dataManager.loadCollection === 'function') {
-          await dataManager.loadCollection();
-        } else if (typeof dataManager.init === 'function') {
-          await dataManager.init();
-        } else if (typeof dataManager.reload === 'function') {
-          await dataManager.reload();
-        }
-
+        if (typeof dataManager.loadCollection === 'function') await dataManager.loadCollection();
         const stats = getCurrentStats();
         io.emit('catalog-updated', { time: Date.now(), stats: stats });
-        io.emit('stats-updated', stats);
       } else {
-        socket.emit('log', { type: 'error', text: `[ERROR] ${script} finished with exit code ${code}.` });
+        socket.emit('log', { type: 'error', text: `[ERROR] ${script} terminó con código de salida ${code}.` });
       }
     });
   });
 });
 
-// Universal SPA / Static Fallback Route
-app.use((req, res) => {
-  const indexPath = path.join(__dirname, 'public', 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.send('Server is running. Please check that the public/ folder contains index.html');
-  }
-});
-
-// Start HTTP & Socket.IO Server
 server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-  console.log(`Music root directory configured at: ${MUSIC_ROOT_DIRECTORY}`);
-  console.log(`Target playlists directory configured at: ${TARGET_PLAYLISTS_DIR}`);
+  console.log(`Servidor activo en http://localhost:${PORT}`);
 });
