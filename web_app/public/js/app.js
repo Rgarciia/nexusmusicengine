@@ -235,7 +235,7 @@ function renderTrackList(tracks) {
           type="checkbox" 
           class="track-checkbox" 
           ${isChecked ? 'checked' : ''} 
-          onchange="toggleTrackSelection('${safePath}', this.checked)"
+          onchange="toggleTrackSelection('${safePath}', this.checked, this)"
         />
       </div>
 
@@ -286,7 +286,7 @@ function renderTrackList(tracks) {
 }
 
 // ==========================================
-// Gestor de Selección de Tracks
+// Gestor de Selección de Tracks y Validaciones
 // ==========================================
 function toggleSelectAll(isChecked) {
   const checkboxes = document.querySelectorAll('.track-checkbox');
@@ -305,13 +305,40 @@ function toggleSelectAll(isChecked) {
   updateSelectedCounter();
 }
 
-function toggleTrackSelection(trackPath, isChecked) {
+function toggleTrackSelection(trackPath, isChecked, checkboxEl = null) {
   if (isChecked) {
+    // Si estamos en modo edición de playlist, verificar si ya existe en ella
+    if (currentEditingPlaylist && currentEditingPlaylist.tracks) {
+      const alreadyInPlaylist = currentEditingPlaylist.tracks.some(t => {
+        const p = typeof t === 'object' ? (t.path || t.filePath) : t;
+        return p && p.toLowerCase() === trackPath.toLowerCase();
+      });
+
+      if (alreadyInPlaylist) {
+        const trackTitle = pathBasename(trackPath);
+        const confirmAdd = confirm(
+          `This track already exists in your playlist:\n"${trackTitle}"\n\nDo you want to add it again?`
+        );
+
+        if (!confirmAdd) {
+          if (checkboxEl) checkboxEl.checked = false;
+          selectedTracks.delete(trackPath);
+          updateSelectedCounter();
+          return;
+        }
+      }
+    }
+
     selectedTracks.set(trackPath, trackPath);
   } else {
     selectedTracks.delete(trackPath);
   }
   updateSelectedCounter();
+}
+
+function pathBasename(pathStr) {
+  if (!pathStr || typeof pathStr !== 'string') return 'Unknown Track';
+  return pathStr.split(/[\\/]/).pop();
 }
 
 function updateSelectedCounter() {
@@ -501,7 +528,7 @@ async function updateEditingPlaylistTracks() {
 
   try {
     const res = await fetch('/api/playlists/update', {
-      method: 'PUT',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         filename: currentEditingPlaylist.filename,

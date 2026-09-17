@@ -257,7 +257,7 @@ app.get('/audio-stream', (req, res) => {
 });
 
 // ==========================================
-// PLAYLISTS API (ROBUSTO Y CON SOPORTE COMPLETO DE RENOMBRADO)
+// PLAYLISTS API (ROBUSTO Y CON SOPORTE COMPLETO DE RENOMBRADO Y ACTUALIZACIÓN DUAL)
 // ==========================================
 app.post('/api/playlists/create', (req, res) => {
   try {
@@ -358,7 +358,8 @@ app.get('/api/playlists/details', (req, res) => {
   }
 });
 
-app.put('/api/playlists/update', (req, res) => {
+// Manejador flexible de actualización de playlists compatible con POST y PUT
+const handleUpdatePlaylist = (req, res) => {
   try {
     const { filename, tracks } = req.body;
     if (!filename || !Array.isArray(tracks)) {
@@ -368,7 +369,8 @@ app.put('/api/playlists/update', (req, res) => {
     const filePathM3U8 = resolvePlaylistPath(filename);
 
     let m3uContent = '#EXTM3U\n';
-    tracks.forEach(trackPath => {
+    tracks.forEach(track => {
+      let trackPath = typeof track === 'object' ? (track.filePath || track.path) : track;
       if (trackPath) {
         const absolutePath = path.win32.normalize(trackPath);
         m3uContent += `#EXTINF:-1,${path.basename(absolutePath)}\n${absolutePath}\n`;
@@ -376,11 +378,20 @@ app.put('/api/playlists/update', (req, res) => {
     });
 
     fs.writeFileSync(filePathM3U8, '\ufeff' + m3uContent, 'utf8');
+
+    // Emitir eventos para actualización en vivo vía WebSockets
+    const stats = getCurrentStats();
+    io.emit('catalog-updated', { time: Date.now(), stats });
+    io.emit('stats-updated', stats);
+
     res.json({ success: true, count: tracks.length, filename: path.basename(filePathM3U8) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.post('/api/playlists/update', handleUpdatePlaylist);
+app.put('/api/playlists/update', handleUpdatePlaylist);
 
 // Manejador flexible de renombrado compatible con cualquier payload del frontend
 const handleRenamePlaylist = (req, res) => {
