@@ -160,7 +160,7 @@
 
   <div class="sidebar">
     <div class="brand-container">
-      <img src="images/logo.png" alt="Nexus Logo" class="brand-logo" onerror="this.onerror=null; this.src='images/favicon.ico';">
+      <img src="images/favicon.ico" alt="Nexus Logo" class="brand-logo" onerror="this.onerror=null; this.src='images/favicon.ico';">
       <div class="brand-text">
         <h2>NEXUS MUSIC</h2>
         <div class="subtitle">ENGINE MANAGER</div>
@@ -941,10 +941,49 @@
     function savePlaylistChanges() {
       if (!activeEditingFilename) return;
 
+      // Extraer paths y normalizar para buscar duplicados
+      const rawPaths = activeEditingTracks.map(t => typeof t === 'object' ? (t.filePath || t.path) : t).filter(Boolean);
+      
+      const uniqueTracks = [];
+      const duplicateTracks = [];
+      const seenMap = new Map();
+
+      activeEditingTracks.forEach(track => {
+        const p = (typeof track === 'object' ? (track.filePath || track.path) : track) || '';
+        const normalizedKey = String(p).trim().toLowerCase();
+        
+        if (seenMap.has(normalizedKey)) {
+          duplicateTracks.push(track);
+        } else {
+          seenMap.set(normalizedKey, true);
+          uniqueTracks.push(track);
+        }
+      });
+
+      let tracksToSubmit = activeEditingTracks;
+
+      if (duplicateTracks.length > 0) {
+        const sampleNames = duplicateTracks.map(t => `- ${t.title || t.filePath || t.path}`).slice(0, 5).join('\n');
+        const extraCount = duplicateTracks.length > 5 ? `\n... y ${duplicateTracks.length - 5} más.` : '';
+
+        const keepDuplicates = confirm(
+          `Se detectaron ${duplicateTracks.length} canción(es) duplicada(s) en la playlist:\n\n` +
+          `${sampleNames}${extraCount}\n\n` +
+          `• Presiona [Aceptar] para MANTENER los duplicados.\n` +
+          `• Presiona [Cancelar] para OMITIR los duplicados (guardar solo únicas).`
+        );
+
+        if (!keepDuplicates) {
+          tracksToSubmit = uniqueTracks;
+          activeEditingTracks = uniqueTracks;
+          renderPlaylistEditorTracks();
+        }
+      }
+
       fetch('/api/playlists/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: activeEditingFilename, tracks: activeEditingTracks })
+        body: JSON.stringify({ filename: activeEditingFilename, tracks: tracksToSubmit })
       })
       .then(res => res.json())
       .then(res => {

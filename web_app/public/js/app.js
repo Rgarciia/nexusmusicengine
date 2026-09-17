@@ -307,7 +307,6 @@ function toggleSelectAll(isChecked) {
 
 function toggleTrackSelection(trackPath, isChecked, checkboxEl = null) {
   if (isChecked) {
-    // Si estamos en modo edición de playlist, verificar si ya existe en ella
     if (currentEditingPlaylist && currentEditingPlaylist.tracks) {
       const alreadyInPlaylist = currentEditingPlaylist.tracks.some(t => {
         const p = typeof t === 'object' ? (t.path || t.filePath) : t;
@@ -512,12 +511,16 @@ function navigateToLibraryTab() {
   }
 }
 
+// ==========================================
+// Guardar Cambios en Playlist con Filtro Inteligente de Duplicados
+// ==========================================
 async function updateEditingPlaylistTracks() {
   if (!currentEditingPlaylist || !currentEditingPlaylist.filename) {
     alert('No hay ninguna playlist activa en edición.');
     return;
   }
 
+  // Obtener todas las rutas seleccionadas actualmente
   const selectedPaths = Array.from(selectedTracks.keys());
 
   if (selectedPaths.length === 0) {
@@ -526,20 +529,59 @@ async function updateEditingPlaylistTracks() {
     }
   }
 
+  // 1. Detección de duplicados en la lista seleccionada
+  const uniquePaths = [];
+  const duplicatePaths = [];
+  const seenMap = new Map();
+
+  selectedPaths.forEach(trackPath => {
+    const normalized = String(trackPath).trim().toLowerCase();
+    if (seenMap.has(normalized)) {
+      duplicatePaths.push(trackPath);
+    } else {
+      seenMap.set(normalized, true);
+      uniquePaths.push(trackPath);
+    }
+  });
+
+  let finalTracksToSave = selectedPaths;
+
+  // 2. Si se detectan duplicados, pedir decisión al usuario
+  if (duplicatePaths.length > 0) {
+    const duplicateNames = duplicatePaths.map(p => `- ${pathBasename(p)}`).slice(0, 5).join('\n');
+    const extraCount = duplicatePaths.length > 5 ? `\n... y ${duplicatePaths.length - 5} más.` : '';
+
+    const keepDuplicates = confirm(
+      `Se detectaron ${duplicatePaths.length} canción(es) duplicada(s) en tu selección:\n\n` +
+      `${duplicateNames}${extraCount}\n\n` +
+      `• Haz clic en [Aceptar] si deseas PERMITIR y mantener los duplicados.\n` +
+      `• Haz clic en [Cancelar] para OMITIR e ignorar los duplicados (guardar solo canciones únicas).`
+    );
+
+    if (!keepDuplicates) {
+      // El usuario eligió OMITIR duplicados: guardamos solo la lista limpia
+      finalTracksToSave = uniquePaths;
+    }
+  }
+
+  // 3. Envío al servidor
   try {
     const res = await fetch('/api/playlists/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         filename: currentEditingPlaylist.filename,
-        tracks: selectedPaths
+        tracks: finalTracksToSave
       })
     });
 
     const data = await res.json();
 
     if (data.success) {
-      alert(`Playlist "${currentEditingPlaylist.name}" actualizada con éxito (${data.count} canciones).`);
+      const omittedCount = selectedPaths.length - finalTracksToSave.length;
+      const msgExtra = omittedCount > 0 ? ` (Se omitieron ${omittedCount} duplicados)` : '';
+      alert(`Playlist "${currentEditingPlaylist.name}" actualizada con éxito (${data.count} canciones).${msgExtra}`);
+      
       cancelEditingPlaylist();
       if (typeof loadPlaylists === 'function') loadPlaylists();
     } else {
