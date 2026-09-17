@@ -6,7 +6,7 @@
   <link rel="stylesheet" href="css/style.css">
   
   <!-- Iconos favicon optimizados para la pestaña del navegador -->
-  <link rel="icon" type="image/png" sizes="32x32" href="images/favico.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="images/favicon.ico">
   <link rel="icon" type="image/png" sizes="16x16" href="images/favicon.ico">
   
   <script src="/socket.io/socket.io.js"></script>
@@ -264,6 +264,7 @@
             <span id="editing-playlist-count" style="font-size: 0.8rem; color: var(--text-muted);">0 tracks inside</span>
           </div>
           <div style="display: flex; gap: 8px;">
+            <button class="btn btn-danger" onclick="removeAllMissingTracks()" style="font-size: 0.8rem;">🧹 Remove All Missing</button>
             <button class="btn btn-primary" onclick="savePlaylistChanges()">💾 Save Changes</button>
             <button class="btn" onclick="closePlaylistEditor()">✖ Close</button>
           </div>
@@ -899,24 +900,57 @@
         return;
       }
 
-      container.innerHTML = activeEditingTracks.map((t, idx) => `
-        <div class="playlist-editor-item">
-          <div style="display: flex; align-items: center; gap: 10px; overflow: hidden;">
-            <span style="color: var(--text-muted); font-weight: bold; width: 22px;">${idx + 1}.</span>
-            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              <strong style="color: #fff;">${escapeHtml(t.title)}</strong> 
-              <span style="color: var(--text-muted); font-size: 0.8rem;">- ${escapeHtml(t.artist)}</span>
+      container.innerHTML = activeEditingTracks.map((t, idx) => {
+        const isMissing = t.missing || t.notFound || t.isMissing || false;
+
+        return `
+          <div class="playlist-editor-item" style="${isMissing ? 'border: 1px solid var(--error); background: #2a0f12;' : ''}">
+            <div style="display: flex; align-items: center; gap: 10px; overflow: hidden; flex: 1; padding-right: 10px;">
+              <span style="color: var(--text-muted); font-weight: bold; width: 22px; flex-shrink: 0;">${idx + 1}.</span>
+              <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                <strong style="color: ${isMissing ? '#fca5a5' : '#fff'};">${escapeHtml(t.title)}</strong> 
+                <span style="color: var(--text-muted); font-size: 0.8rem;">- ${escapeHtml(t.artist)}</span>
+                ${isMissing ? `
+                  <span style="
+                    display: inline-block;
+                    margin-left: 8px;
+                    background: var(--error);
+                    color: #fff;
+                    font-size: 0.7rem;
+                    font-weight: bold;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    text-transform: uppercase;
+                  ">⚠️ Track or Song not found, please remove</span>
+                ` : ''}
+              </div>
             </div>
+            <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.72rem; flex-shrink: 0;" onclick="removeTrackFromPlaylist(${idx})">✕ Rem</button>
           </div>
-          <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.72rem;" onclick="removeTrackFromPlaylist(${idx})">✕ Rem</button>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function removeTrackFromPlaylist(index) {
       if (index >= 0 && index < activeEditingTracks.length) {
         activeEditingTracks.splice(index, 1);
         renderPlaylistEditorTracks();
+      }
+    }
+
+    function removeAllMissingTracks() {
+      if (!activeEditingTracks || activeEditingTracks.length === 0) return;
+
+      const initialCount = activeEditingTracks.length;
+      activeEditingTracks = activeEditingTracks.filter(t => !t.missing && !t.notFound && !t.isMissing);
+      
+      const removedCount = initialCount - activeEditingTracks.length;
+
+      if (removedCount === 0) {
+        alert("No missing or deleted tracks were found in this playlist.");
+      } else {
+        renderPlaylistEditorTracks();
+        alert(`Successfully removed ${removedCount} missing track(s) from the editor. Remember to click "Save Changes" to apply.`);
       }
     }
 
@@ -964,13 +998,13 @@
 
       if (duplicateTracks.length > 0) {
         const sampleNames = duplicateTracks.map(t => `- ${t.title || t.filePath || t.path}`).slice(0, 5).join('\n');
-        const extraCount = duplicateTracks.length > 5 ? `\n... y ${duplicateTracks.length - 5} más.` : '';
+        const extraCount = duplicateTracks.length > 5 ? `\n... and ${duplicateTracks.length - 5} more.` : '';
 
         const keepDuplicates = confirm(
-          `Se detectaron ${duplicateTracks.length} canción(es) duplicada(s) en la playlist:\n\n` +
+          `Detected ${duplicateTracks.length} duplicate track(s) in the playlist:\n\n` +
           `${sampleNames}${extraCount}\n\n` +
-          `• Presiona [Aceptar] para MANTENER los duplicados.\n` +
-          `• Presiona [Cancelar] para OMITIR los duplicados (guardar solo únicas).`
+          `• Press [OK] to KEEP the duplicates.\n` +
+          `• Press [Cancel] to OMIT the duplicates (save unique only).`
         );
 
         if (!keepDuplicates) {
